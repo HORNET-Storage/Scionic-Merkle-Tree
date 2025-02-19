@@ -338,13 +338,10 @@ func ReadDag(path string) (*Dag, error) {
 }
 
 func (dag *Dag) GetContentFromLeaf(leaf *DagLeaf) ([]byte, error) {
-	if len(leaf.Content) <= 0 {
-		return []byte{}, nil
-	}
-
 	var content []byte
 
 	if len(leaf.Links) > 0 {
+		// For chunked files, concatenate content from all chunks
 		for _, link := range leaf.Links {
 			childLeaf := dag.Leafs[link]
 			if childLeaf == nil {
@@ -353,7 +350,8 @@ func (dag *Dag) GetContentFromLeaf(leaf *DagLeaf) ([]byte, error) {
 
 			content = append(content, childLeaf.Content...)
 		}
-	} else {
+	} else if len(leaf.Content) > 0 {
+		// For single-chunk files, return content directly
 		content = leaf.Content
 	}
 
