@@ -143,6 +143,7 @@ func (b *DagLeafBuilder) BuildLeaf(additionalData map[string]string) (*DagLeaf, 
 		return nil, err
 	}
 
+	sortedLinks := sortMapByKeys(b.Links)
 	leaf := &DagLeaf{
 		Hash:              c.String(),
 		ItemName:          b.ItemName,
@@ -151,7 +152,7 @@ func (b *DagLeafBuilder) BuildLeaf(additionalData map[string]string) (*DagLeaf, 
 		CurrentLinkCount:  len(b.Links),
 		Content:           b.Data,
 		ContentHash:       leafData.ContentHash,
-		Links:             b.Links,
+		Links:             sortedLinks,
 		AdditionalData:    additionalData,
 		MerkleTree:        merkleTree,
 		LeafMap:           leafMap,
@@ -231,6 +232,7 @@ func (b *DagLeafBuilder) BuildRootLeaf(dag *DagBuilder, additionalData map[strin
 		return nil, err
 	}
 
+	sortedLinks := sortMapByKeys(b.Links)
 	leaf := &DagLeaf{
 		Hash:              c.String(),
 		ItemName:          b.ItemName,
@@ -241,7 +243,7 @@ func (b *DagLeafBuilder) BuildRootLeaf(dag *DagBuilder, additionalData map[strin
 		LeafCount:         len(dag.Leafs),
 		Content:           b.Data,
 		ContentHash:       leafData.ContentHash,
-		Links:             b.Links,
+		Links:             sortedLinks,
 		AdditionalData:    additionalData,
 		MerkleTree:        merkleTree,
 		LeafMap:           leafMap,

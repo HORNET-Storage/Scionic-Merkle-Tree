@@ -48,9 +48,7 @@ func CreateDag(path string, timestampRoot bool) (*Dag, error) {
 
 	if timestampRoot {
 		currentTime := time.Now().UTC()
-
 		timeString := currentTime.Format(time.RFC3339)
-
 		additionalData = map[string]string{
 			"timestamp": timeString,
 		}
@@ -101,7 +99,6 @@ func createDag(path string, additionalData map[string]string) (*Dag, error) {
 	}
 
 	dag.AddLeaf(leaf, nil)
-
 	rootHash := leaf.Hash
 
 	return dag.BuildDag(rootHash), nil
@@ -133,7 +130,6 @@ func processDirectory(entry fs.DirEntry, path *string, dag *DagBuilder, isRoot b
 	}
 
 	builder := CreateDagLeafBuilder(relPath)
-
 	builder.SetType(DirectoryLeafType)
 
 	entries, err := os.ReadDir(entryPath)
@@ -177,9 +173,7 @@ func processFile(entry fs.DirEntry, path *string, dag *DagBuilder, isRoot bool, 
 	}
 
 	var result *DagLeaf
-
 	builder := CreateDagLeafBuilder(relPath)
-
 	builder.SetType(FileLeafType)
 
 	fileData, err := os.ReadFile(entryPath)
@@ -188,7 +182,6 @@ func processFile(entry fs.DirEntry, path *string, dag *DagBuilder, isRoot bool, 
 	}
 
 	builder.SetType(FileLeafType)
-
 	fileChunks := chunkFile(fileData, ChunkSize)
 
 	if len(fileChunks) == 1 {
@@ -272,7 +265,6 @@ func (b *DagBuilder) AddLeaf(leaf *DagLeaf, parentLeaf *DagLeaf) error {
 	}
 
 	b.Leafs[leaf.Hash] = leaf
-
 	return nil
 }
 
@@ -384,7 +376,6 @@ func (d *Dag) IterateDag(processLeaf func(leaf *DagLeaf, parent *DagLeaf) error)
 		sort.Slice(childHashes, func(i, j int) bool {
 			numI, _ := strconv.Atoi(strings.Split(childHashes[i], ":")[0])
 			numJ, _ := strconv.Atoi(strings.Split(childHashes[j], ":")[0])
-
 			return numI < numJ
 		})
 
@@ -413,7 +404,6 @@ func (d *Dag) findParent(leaf *DagLeaf) *DagLeaf {
 
 // buildVerificationBranch creates a branch containing the leaf and its verification path
 func (d *Dag) buildVerificationBranch(leaf *DagLeaf) (*DagBranch, error) {
-	fmt.Printf("Building verification branch for leaf: %+v\n", leaf)
 	branch := &DagBranch{
 		Leaf:         leaf.Clone(),
 		Path:         make([]*DagLeaf, 0),
@@ -425,17 +415,11 @@ func (d *Dag) buildVerificationBranch(leaf *DagLeaf) (*DagBranch, error) {
 	for current.Hash != d.Root {
 		parent := d.findParent(current)
 		if parent == nil {
-			fmt.Printf("Failed to find parent for leaf %s\n", current.Hash)
 			return nil, fmt.Errorf("failed to find parent for leaf %s", current.Hash)
 		}
-		fmt.Printf("Found parent for %s: %+v\n", current.Hash, parent)
 
 		// If parent has merkle tree, get proof
 		if len(parent.Links) > 1 {
-			fmt.Printf("Parent has multiple links (%d), getting merkle proof\n", len(parent.Links))
-			fmt.Printf("Parent merkle tree: %+v\n", parent.MerkleTree)
-			fmt.Printf("Parent leaf map: %+v\n", parent.LeafMap)
-
 			// Find the label for current in parent's links
 			var label string
 			for l, h := range parent.Links {
@@ -450,10 +434,8 @@ func (d *Dag) buildVerificationBranch(leaf *DagLeaf) (*DagBranch, error) {
 
 			proof, err := parent.GetBranch(label)
 			if err != nil {
-				fmt.Printf("Failed to get branch: %v\n", err)
 				return nil, err
 			}
-			fmt.Printf("Got proof for %s: %+v\n", current.Hash, proof)
 			branch.MerkleProofs[parent.Hash] = proof
 		}
 
@@ -498,44 +480,36 @@ func (d *Dag) GetPartial(start, end int) (*Dag, error) {
 
 	// Get root leaf
 	rootLeaf := d.Leafs[d.Root].Clone()
-	fmt.Printf("Root leaf: %+v\n", rootLeaf)
 	partialDag.Leafs[d.Root] = rootLeaf
 
 	// Process each requested leaf
 	for i := start; i <= end; i++ {
 		label := strconv.Itoa(i)
-		fmt.Printf("Processing label %s\n", label)
 
 		// Find and validate leaf
 		var targetLeaf *DagLeaf
 		for _, leaf := range d.Leafs {
 			if GetLabel(leaf.Hash) == label {
 				targetLeaf = leaf
-				fmt.Printf("Found leaf for label %s: %+v\n", label, leaf)
 				break
 			}
 		}
 
 		if targetLeaf == nil {
-			fmt.Printf("No leaf found for label %s\n", label)
 			continue
 		}
 
 		// Build verification path
 		branch, err := d.buildVerificationBranch(targetLeaf)
 		if err != nil {
-			fmt.Printf("Failed to build verification branch for label %s: %v\n", label, err)
 			return nil, err
 		}
-		fmt.Printf("Built verification branch for label %s: %+v\n", label, branch)
 
 		// Add branch to partial DAG
 		err = d.addBranchToPartial(branch, partialDag)
 		if err != nil {
-			fmt.Printf("Failed to add branch to partial DAG for label %s: %v\n", label, err)
 			return nil, err
 		}
-		fmt.Printf("Added branch to partial DAG for label %s\n", label)
 	}
 
 	return partialDag, nil
