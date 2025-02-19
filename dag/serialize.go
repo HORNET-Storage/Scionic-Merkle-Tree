@@ -26,6 +26,7 @@ type SerializableDagLeaf struct {
 	LeafCount         int
 	Links             map[string]string
 	AdditionalData    map[string]string
+	StoredProofs      map[string]*ClassicTreeBranch `json:"stored_proofs,omitempty" cbor:"stored_proofs,omitempty"`
 }
 
 // ToSerializable converts a Dag to its serializable form
@@ -42,7 +43,7 @@ func (dag *Dag) ToSerializable() *SerializableDag {
 	return serializable
 }
 
-// FromSerializable reconstructs a full Dag from its serializable form
+// FromSerializable reconstructs a Dag from its serializable form
 func FromSerializable(s *SerializableDag) *Dag {
 	dag := &Dag{
 		Root:  s.Root,
@@ -61,6 +62,7 @@ func FromSerializable(s *SerializableDag) *Dag {
 			CurrentLinkCount:  sLeaf.CurrentLinkCount,
 			Links:             make(map[string]string),
 			AdditionalData:    make(map[string]string),
+			Proofs:            make(map[string]*ClassicTreeBranch),
 		}
 
 		// Copy and sort links
@@ -69,6 +71,13 @@ func FromSerializable(s *SerializableDag) *Dag {
 		// Copy and sort additional data
 		dag.Leafs[hash].AdditionalData = sortMapByKeys(sLeaf.AdditionalData)
 
+		// Copy stored proofs
+		if sLeaf.StoredProofs != nil {
+			for k, v := range sLeaf.StoredProofs {
+				dag.Leafs[hash].Proofs[k] = v
+			}
+		}
+
 		// Set root-specific fields
 		if hash == s.Root {
 			dag.Leafs[hash].LeafCount = sLeaf.LeafCount
@@ -76,20 +85,33 @@ func FromSerializable(s *SerializableDag) *Dag {
 		}
 	}
 
-	// Second pass: rebuild Merkle trees
+	// Check if this is a partial DAG
+	isPartial := false
 	for _, leaf := range dag.Leafs {
-		// Rebuild Merkle tree if leaf has multiple links
-		if len(leaf.Links) > 1 {
-			builder := merkle_tree.CreateTree()
-			for _, link := range leaf.Links {
-				builder.AddLeaf(GetLabel(link), link)
-			}
+		if len(leaf.Links) < leaf.CurrentLinkCount {
+			isPartial = true
+			break
+		}
+	}
 
-			merkleTree, leafMap, err := builder.Build()
-			if err == nil {
-				leaf.MerkleTree = merkleTree
-				leaf.LeafMap = leafMap
-				leaf.ClassicMerkleRoot = merkleTree.Root
+	// For full DAGs, rebuild Merkle trees
+	// For partial DAGs, preserve the existing Merkle roots
+	if !isPartial {
+		// Second pass: rebuild Merkle trees for full DAGs
+		for _, leaf := range dag.Leafs {
+			// Rebuild Merkle tree if leaf has multiple links
+			if len(leaf.Links) > 1 {
+				builder := merkle_tree.CreateTree()
+				for _, link := range leaf.Links {
+					builder.AddLeaf(GetLabel(link), link)
+				}
+
+				merkleTree, leafMap, err := builder.Build()
+				if err == nil {
+					leaf.MerkleTree = merkleTree
+					leaf.LeafMap = leafMap
+					leaf.ClassicMerkleRoot = merkleTree.Root
+				}
 			}
 		}
 	}
@@ -121,6 +143,7 @@ func (leaf *DagLeaf) ToSerializable() *SerializableDagLeaf {
 		LeafCount:         leaf.LeafCount,
 		Links:             make(map[string]string),
 		AdditionalData:    make(map[string]string),
+		StoredProofs:      make(map[string]*ClassicTreeBranch),
 	}
 
 	// Copy and sort links
@@ -128,6 +151,13 @@ func (leaf *DagLeaf) ToSerializable() *SerializableDagLeaf {
 
 	// Copy and sort additional data
 	serializable.AdditionalData = sortMapByKeys(leaf.AdditionalData)
+
+	// Copy stored proofs
+	if leaf.Proofs != nil {
+		for k, v := range leaf.Proofs {
+			serializable.StoredProofs[k] = v
+		}
+	}
 
 	return serializable
 }

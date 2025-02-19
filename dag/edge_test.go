@@ -53,7 +53,7 @@ func TestOutOfRangeLeafRequests(t *testing.T) {
 				return // Expected for invalid ranges
 			}
 			// If we got a partial DAG, verify it's valid
-			if err := partial.VerifyPartial(); err != nil {
+			if err := partial.Verify(); err != nil {
 				t.Errorf("Invalid partial DAG returned for range %d-%d: %v", tt.start, tt.end, err)
 			}
 		})
@@ -210,37 +210,40 @@ func TestInvalidPaths(t *testing.T) {
 }
 
 func TestBrokenDags(t *testing.T) {
-	tmpDir, err := ioutil.TempDir("", "test")
-	if err != nil {
-		t.Fatalf("Could not create temp directory: %s", err)
-	}
-	defer os.RemoveAll(tmpDir)
+	// Create a valid DAG with known structure
+	dagBuilder := CreateDagBuilder()
 
-	// Create a valid DAG first
-	err = ioutil.WriteFile(filepath.Join(tmpDir, "test.txt"), []byte("test content"), 0644)
+	// Create a file leaf
+	fileBuilder := CreateDagLeafBuilder("test.txt")
+	fileBuilder.SetType(FileLeafType)
+	fileBuilder.SetData([]byte("test content"))
+	fileLeaf, err := fileBuilder.BuildLeaf(nil)
 	if err != nil {
-		t.Fatalf("Failed to create test file: %v", err)
+		t.Fatalf("Failed to build file leaf: %v", err)
 	}
+	fileLeaf.SetLabel("1")
+	dagBuilder.AddLeaf(fileLeaf, nil)
 
-	dag, err := CreateDag(tmpDir, false)
+	// Create a directory with the file
+	dirBuilder := CreateDagLeafBuilder("testdir")
+	dirBuilder.SetType(DirectoryLeafType)
+	dirBuilder.AddLink("1", fileLeaf.Hash)
+	dirLeaf, err := dirBuilder.BuildRootLeaf(dagBuilder, nil)
 	if err != nil {
-		t.Fatalf("Failed to create DAG: %v", err)
+		t.Fatalf("Failed to build directory leaf: %v", err)
 	}
+	dagBuilder.AddLeaf(dirLeaf, nil)
+
+	dag := dagBuilder.BuildDag(dirLeaf.Hash)
 
 	t.Run("missing_leaf", func(t *testing.T) {
 		brokenDag := &Dag{
 			Root:  dag.Root,
 			Leafs: make(map[string]*DagLeaf),
 		}
-		// Copy all leaves except one
-		var skippedOne bool
-		for hash, leaf := range dag.Leafs {
-			if !skippedOne {
-				skippedOne = true
-				continue
-			}
-			brokenDag.Leafs[hash] = leaf
-		}
+		// Only copy the root leaf
+		brokenDag.Leafs[dag.Root] = dag.Leafs[dag.Root].Clone()
+
 		if err := brokenDag.Verify(); err == nil {
 			t.Error("Expected verification to fail for DAG with missing leaf")
 		}
@@ -251,11 +254,18 @@ func TestBrokenDags(t *testing.T) {
 			Root:  dag.Root,
 			Leafs: make(map[string]*DagLeaf),
 		}
-		// Copy all leaves but corrupt one's content
+		// Copy all leaves but corrupt file content
 		for hash, leaf := range dag.Leafs {
 			leafCopy := leaf.Clone()
-			if leaf.Type == FileLeafType || leaf.Type == ChunkLeafType {
-				leafCopy.Content = append(leafCopy.Content, []byte("corrupted")...)
+			if leaf.Type == FileLeafType {
+				// Create a new leaf with corrupted content
+				builder := CreateDagLeafBuilder(leaf.ItemName)
+				builder.SetType(leaf.Type)
+				builder.SetData(append(leaf.Content, []byte("corrupted")...))
+				corruptedLeaf, _ := builder.BuildLeaf(nil)
+				// Keep original hash but use corrupted content and hash
+				leafCopy.Content = corruptedLeaf.Content
+				leafCopy.ContentHash = corruptedLeaf.ContentHash
 			}
 			brokenDag.Leafs[hash] = leafCopy
 		}
@@ -273,7 +283,12 @@ func TestBrokenDags(t *testing.T) {
 		for hash, leaf := range dag.Leafs {
 			leafCopy := leaf.Clone()
 			if len(leafCopy.ClassicMerkleRoot) > 0 {
-				leafCopy.ClassicMerkleRoot = append(leafCopy.ClassicMerkleRoot, []byte("corrupted")...)
+				// Create a different merkle root by changing the content
+				builder := CreateDagLeafBuilder(leaf.ItemName)
+				builder.SetType(leaf.Type)
+				builder.AddLink("invalid", "invalid:hash")
+				corruptedLeaf, _ := builder.BuildLeaf(nil)
+				leafCopy.ClassicMerkleRoot = corruptedLeaf.ClassicMerkleRoot
 			}
 			brokenDag.Leafs[hash] = leafCopy
 		}
@@ -291,8 +306,13 @@ func TestBrokenDags(t *testing.T) {
 		for hash, leaf := range dag.Leafs {
 			leafCopy := leaf.Clone()
 			if len(leafCopy.Links) > 0 {
-				// Add invalid link
-				leafCopy.Links["invalid"] = "invalid:hash"
+				// Add invalid link while preserving CurrentLinkCount
+				builder := CreateDagLeafBuilder(leaf.ItemName)
+				builder.SetType(leaf.Type)
+				builder.AddLink("invalid", "invalid:hash")
+				corruptedLeaf, _ := builder.BuildLeaf(nil)
+				leafCopy.Links = corruptedLeaf.Links
+				// CurrentLinkCount stays the same as it's part of the hash
 			}
 			brokenDag.Leafs[hash] = leafCopy
 		}

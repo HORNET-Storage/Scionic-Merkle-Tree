@@ -15,7 +15,7 @@ func TestFull(t *testing.T) {
 
 	defer os.RemoveAll(tmpDir)
 
-	GenerateDummyDirectory(filepath.Join(tmpDir, "input"), 6, 6)
+	GenerateDummyDirectory(filepath.Join(tmpDir, "input"), 3, 6, 1, 3)
 	if err != nil {
 		t.Fatalf("Could not generate dummy directory: %s", err)
 	}

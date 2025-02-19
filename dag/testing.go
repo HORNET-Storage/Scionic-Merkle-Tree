@@ -9,32 +9,41 @@ import (
 	"time"
 )
 
-func GenerateDummyDirectory(path string, maxItems int, maxDepth int) {
+func GenerateDummyDirectory(path string, minItems, maxItems, minDepth, maxDepth int) {
 	rand.Seed(time.Now().UnixNano())
 
-	err := createRandomDirsAndFiles(path, maxDepth, maxItems)
+	err := createRandomDirsAndFiles(path, minDepth, maxDepth, minItems, maxItems)
 	if err != nil {
 		fmt.Println("Error:", err)
 	}
 }
 
-func createRandomDirsAndFiles(path string, depth int, maxItems int) error {
+func createRandomDirsAndFiles(path string, minDepth, depth, minItems, maxItems int) error {
 	if depth == 0 {
 		return nil
 	}
 
+	// Create directory if it doesn't exist
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		err := os.Mkdir(path, 0755)
-		if err != nil {
+		if err := os.Mkdir(path, 0755); err != nil {
 			return err
 		}
 	}
 
-	numItems := rand.Intn(maxItems) + 1
+	// Ensure we meet minimum items
+	numItems := minItems
+	if maxItems > minItems {
+		numItems += rand.Intn(maxItems - minItems)
+	}
+
+	// If we're at minDepth or above, ensure at least one subdirectory
+	needSubdir := depth > minDepth
+
 	for i := 0; i < numItems; i++ {
-		if rand.Intn(2) == 0 {
+		if needSubdir || rand.Intn(2) == 0 {
 			subDir := fmt.Sprintf("%s/subdir%d", path, i)
-			err := createRandomDirsAndFiles(subDir, depth-1, maxItems)
+			err := createRandomDirsAndFiles(subDir, minDepth, depth-1, minItems, maxItems)
+			needSubdir = false // We've created our required subdir
 			if err != nil {
 				return err
 			}
@@ -42,8 +51,7 @@ func createRandomDirsAndFiles(path string, depth int, maxItems int) error {
 			filePath := fmt.Sprintf("%s/file%d.txt", path, i)
 			randomData := make([]byte, rand.Intn(100))
 			rand.Read(randomData)
-			err := ioutil.WriteFile(filePath, randomData, 0644)
-			if err != nil {
+			if err := ioutil.WriteFile(filePath, randomData, 0644); err != nil {
 				return err
 			}
 		}

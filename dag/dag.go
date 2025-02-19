@@ -275,9 +275,10 @@ func (b *DagBuilder) BuildDag(root string) *Dag {
 	}
 }
 
-func (dag *Dag) Verify() error {
-	err := dag.IterateDag(func(leaf *DagLeaf, parent *DagLeaf) error {
-		if leaf.Hash == dag.Root {
+// verifyFullDag verifies a complete DAG by checking parent-child relationships
+func (d *Dag) verifyFullDag() error {
+	return d.IterateDag(func(leaf *DagLeaf, parent *DagLeaf) error {
+		if leaf.Hash == d.Root {
 			err := leaf.VerifyRootLeaf()
 			if err != nil {
 				return err
@@ -295,12 +296,83 @@ func (dag *Dag) Verify() error {
 
 		return nil
 	})
+}
 
-	if err != nil {
-		return err
+// verifyWithProofs verifies a partial DAG using stored Merkle proofs
+func (d *Dag) verifyWithProofs() error {
+	// First verify the root leaf
+	rootLeaf := d.Leafs[d.Root]
+	if err := rootLeaf.VerifyRootLeaf(); err != nil {
+		return fmt.Errorf("root leaf failed to verify: %w", err)
+	}
+
+	// Verify each non-root leaf
+	for _, leaf := range d.Leafs {
+		if leaf.Hash == d.Root {
+			continue
+		}
+
+		// First verify the leaf itself
+		if err := leaf.VerifyLeaf(); err != nil {
+			return fmt.Errorf("leaf %s failed to verify: %w", leaf.Hash, err)
+		}
+
+		// Then verify the path to root
+		current := leaf
+		for current.Hash != d.Root {
+			// Find parent in this partial DAG
+			var parent *DagLeaf
+			for _, potential := range d.Leafs {
+				if potential.HasLink(current.Hash) {
+					parent = potential
+					break
+				}
+			}
+			if parent == nil {
+				return fmt.Errorf("broken path to root for leaf %s", leaf.Hash)
+			}
+
+			// Verify parent leaf
+			if parent.Hash != d.Root {
+				if err := parent.VerifyLeaf(); err != nil {
+					return fmt.Errorf("parent leaf %s failed to verify: %w", parent.Hash, err)
+				}
+			}
+
+			// Only verify merkle proof if parent has multiple children
+			// according to its CurrentLinkCount (which is part of its hash)
+			if parent.CurrentLinkCount > 1 {
+				// Try both the full hash and the hash without label
+				var proof *ClassicTreeBranch
+				var hasProof bool
+
+				proof, hasProof = parent.Proofs[current.Hash]
+
+				if !hasProof {
+					return fmt.Errorf("missing merkle proof for node %s in partial DAG", current.Hash)
+				}
+
+				err := parent.VerifyBranch(proof)
+				if err != nil {
+					return fmt.Errorf("invalid merkle proof for node %s: %w", current.Hash, err)
+				}
+			}
+
+			current = parent
+		}
 	}
 
 	return nil
+}
+
+// Verify checks the integrity of the DAG, automatically choosing between full and partial verification
+func (d *Dag) Verify() error {
+	if d.IsPartial() {
+		// Use more thorough verification with proofs for partial DAGs
+		return d.verifyWithProofs()
+	}
+	// Use simpler verification for full DAGs
+	return d.verifyFullDag()
 }
 
 func (dag *Dag) CreateDirectory(path string) error {
@@ -392,6 +464,35 @@ func (d *Dag) IterateDag(processLeaf func(leaf *DagLeaf, parent *DagLeaf) error)
 	return iterate(d.Root, nil)
 }
 
+// IsPartial returns true if this DAG is a partial DAG (has pruned links)
+func (d *Dag) IsPartial() bool {
+	for _, leaf := range d.Leafs {
+		if len(leaf.Links) < leaf.CurrentLinkCount {
+			return true
+		}
+	}
+	return false
+}
+
+// pruneIrrelevantLinks removes links that aren't needed for partial verification
+func (d *Dag) pruneIrrelevantLinks(relevantHashes map[string]bool) {
+	for _, leaf := range d.Leafs {
+		// Create new map for relevant links
+		prunedLinks := make(map[string]string)
+
+		// Only keep links that are relevant
+		for label, hash := range leaf.Links {
+			if relevantHashes[GetHash(hash)] {
+				prunedLinks[label] = hash
+			}
+		}
+
+		// Only modify the Links map, keep everything else as is
+		// since they're part of the leaf's identity
+		leaf.Links = prunedLinks
+	}
+}
+
 // findParent searches the DAG for a leaf's parent
 func (d *Dag) findParent(leaf *DagLeaf) *DagLeaf {
 	for _, potential := range d.Leafs {
@@ -404,22 +505,38 @@ func (d *Dag) findParent(leaf *DagLeaf) *DagLeaf {
 
 // buildVerificationBranch creates a branch containing the leaf and its verification path
 func (d *Dag) buildVerificationBranch(leaf *DagLeaf) (*DagBranch, error) {
+	// Clone the root leaf first to ensure it has all fields
+	rootLeaf := d.Leafs[d.Root].Clone()
+
 	branch := &DagBranch{
-		Leaf:         leaf.Clone(),
-		Path:         make([]*DagLeaf, 0),
-		MerkleProofs: make(map[string]*ClassicTreeBranch),
+		Leaf: leaf.Clone(),
+		Path: make([]*DagLeaf, 0),
 	}
+
+	// Always add root leaf to path
+	branch.Path = append(branch.Path, rootLeaf)
 
 	// Find path to root through parent nodes
 	current := leaf
 	for current.Hash != d.Root {
-		parent := d.findParent(current)
+		// Find parent in this partial DAG, not the original
+		var parent *DagLeaf
+		for _, potential := range d.Leafs {
+			if potential.HasLink(current.Hash) {
+				parent = potential
+				break
+			}
+		}
 		if parent == nil {
 			return nil, fmt.Errorf("failed to find parent for leaf %s", current.Hash)
 		}
 
-		// If parent has merkle tree, get proof
-		if len(parent.Links) > 1 {
+		// Clone parent before any modifications
+		parentClone := parent.Clone()
+
+		// If parent has multiple children according to CurrentLinkCount,
+		// we must generate and store a proof since this is our only chance
+		if parent.CurrentLinkCount > 1 {
 			// Find the label for current in parent's links
 			var label string
 			for l, h := range parent.Links {
@@ -432,14 +549,39 @@ func (d *Dag) buildVerificationBranch(leaf *DagLeaf) (*DagBranch, error) {
 				return nil, fmt.Errorf("unable to find label for key")
 			}
 
-			proof, err := parent.GetBranch(label)
+			// Build merkle tree with all current links
+			builder := merkle_tree.CreateTree()
+			for l, h := range parent.Links {
+				builder.AddLeaf(l, h)
+			}
+			merkleTree, _, err := builder.Build()
 			if err != nil {
 				return nil, err
 			}
-			branch.MerkleProofs[parent.Hash] = proof
+
+			// Get proof for the current leaf
+			index, exists := merkleTree.GetIndexForKey(label)
+			if !exists {
+				return nil, fmt.Errorf("unable to find index for key %s", label)
+			}
+
+			// Store proof in parent clone
+			if parentClone.Proofs == nil {
+				parentClone.Proofs = make(map[string]*ClassicTreeBranch)
+			}
+
+			proof := &ClassicTreeBranch{
+				Leaf:  current.Hash,
+				Proof: merkleTree.Proofs[index],
+			}
+
+			// Store proof using the hash
+			parentClone.Proofs[current.Hash] = proof
 		}
 
-		branch.Path = append(branch.Path, parent.Clone())
+		// Always add parent to path so its proofs get merged
+		branch.Path = append(branch.Path, parentClone)
+
 		current = parent
 	}
 
@@ -453,18 +595,27 @@ func (d *Dag) addBranchToPartial(branch *DagBranch, partial *Dag) error {
 		partial.Leafs[branch.Leaf.Hash] = branch.Leaf
 	}
 
-	// Add path nodes and their merkle proofs
-	for _, pathNode := range branch.Path {
-		if _, exists := partial.Leafs[pathNode.Hash]; !exists {
-			partial.Leafs[pathNode.Hash] = pathNode
-
-			// If node has merkle proof, verify and include required siblings
-			if proof, hasProof := branch.MerkleProofs[pathNode.Hash]; hasProof {
-				err := pathNode.VerifyBranch(proof)
-				if err != nil {
-					return fmt.Errorf("invalid merkle proof for node %s: %w", pathNode.Hash, err)
+	// Add all path nodes (including root) and merge their proofs
+	for i := 0; i < len(branch.Path); i++ {
+		pathNode := branch.Path[i]
+		if existingNode, exists := partial.Leafs[pathNode.Hash]; exists {
+			// Create a new node with merged proofs
+			mergedNode := existingNode.Clone()
+			if mergedNode.Proofs == nil {
+				mergedNode.Proofs = make(map[string]*ClassicTreeBranch)
+			}
+			if pathNode.Proofs != nil {
+				for k, v := range pathNode.Proofs {
+					mergedNode.Proofs[k] = v
 				}
 			}
+
+			// Update the node in the map
+			partial.Leafs[pathNode.Hash] = mergedNode
+
+		} else {
+			partial.Leafs[pathNode.Hash] = pathNode
+
 		}
 	}
 
@@ -473,25 +624,45 @@ func (d *Dag) addBranchToPartial(branch *DagBranch, partial *Dag) error {
 
 // GetPartial returns a new DAG containing only the requested leaves and their verification paths
 func (d *Dag) GetPartial(start, end int) (*Dag, error) {
+	if start == end {
+		return nil, fmt.Errorf("invalid range: indices cannot be the same")
+	}
+
+	if start < 0 || end < 0 {
+		return nil, fmt.Errorf("invalid range: indices cannot be negative")
+	}
+
+	if start > end {
+		return nil, fmt.Errorf("invalid range: start cannot be greater than end")
+	}
+
+	rootLeaf := d.Leafs[d.Root]
+	if start >= rootLeaf.LeafCount || end > rootLeaf.LeafCount {
+		return nil, fmt.Errorf("invalid range: indices cannot be greater than the overall leaf count")
+	}
+
 	partialDag := &Dag{
 		Leafs: make(map[string]*DagLeaf),
 		Root:  d.Root,
 	}
 
-	// Get root leaf
-	rootLeaf := d.Leafs[d.Root].Clone()
-	partialDag.Leafs[d.Root] = rootLeaf
+	// Track hashes that are relevant for verification
+	relevantHashes := make(map[string]bool)
+	relevantHashes[GetHash(d.Root)] = true
 
 	// Process each requested leaf
 	for i := start; i <= end; i++ {
-		label := strconv.Itoa(i)
-
 		// Find and validate leaf
 		var targetLeaf *DagLeaf
-		for _, leaf := range d.Leafs {
-			if GetLabel(leaf.Hash) == label {
-				targetLeaf = leaf
-				break
+		if i == 0 {
+			targetLeaf = d.Leafs[d.Root]
+		} else {
+			label := strconv.Itoa(i)
+			for _, leaf := range d.Leafs {
+				if GetLabel(leaf.Hash) == label {
+					targetLeaf = leaf
+					break
+				}
 			}
 		}
 
@@ -499,10 +670,28 @@ func (d *Dag) GetPartial(start, end int) (*Dag, error) {
 			continue
 		}
 
+		// Add target leaf hash to relevant hashes
+		relevantHashes[GetHash(targetLeaf.Hash)] = true
+
 		// Build verification path
 		branch, err := d.buildVerificationBranch(targetLeaf)
 		if err != nil {
 			return nil, err
+		}
+
+		// Track hashes from verification path
+		for _, pathNode := range branch.Path {
+			relevantHashes[GetHash(pathNode.Hash)] = true
+		}
+
+		// Track hashes from Merkle proofs
+		for _, proof := range branch.MerkleProofs {
+			// Add the leaf hash
+			relevantHashes[GetHash(proof.Leaf)] = true
+			// Add all sibling hashes from the proof
+			for _, sibling := range proof.Proof.Siblings {
+				relevantHashes[string(sibling)] = true
+			}
 		}
 
 		// Add branch to partial DAG
@@ -512,52 +701,17 @@ func (d *Dag) GetPartial(start, end int) (*Dag, error) {
 		}
 	}
 
+	// Prune irrelevant links from the partial DAG
+	partialDag.pruneIrrelevantLinks(relevantHashes)
+
 	return partialDag, nil
 }
 
-// VerifyPartial verifies the integrity of a partial DAG
-func (d *Dag) VerifyPartial() error {
-	// Verify each leaf can trace to root with valid proofs
-	for _, leaf := range d.Leafs {
-		if leaf.Hash == d.Root {
-			continue
-		}
-
-		current := leaf
-		for current.Hash != d.Root {
-			parent := d.findParent(current)
-			if parent == nil {
-				return fmt.Errorf("broken path to root for leaf %s", leaf.Hash)
-			}
-
-			// Verify merkle proof if parent has multiple children
-			if len(parent.Links) > 1 {
-				// Find the label for current in parent's links
-				var label string
-				for l, h := range parent.Links {
-					if h == current.Hash {
-						label = l
-						break
-					}
-				}
-				if label == "" {
-					return fmt.Errorf("unable to find label for key")
-				}
-
-				branch, err := parent.GetBranch(label)
-				if err != nil {
-					return err
-				}
-
-				err = parent.VerifyBranch(branch)
-				if err != nil {
-					return fmt.Errorf("invalid merkle proof for node %s: %w", current.Hash, err)
-				}
-			}
-
-			current = parent
-		}
+// Helper function to get keys from a map for debugging
+func getMapKeys(m map[string]*ClassicTreeBranch) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
 	}
-
-	return nil
+	return keys
 }

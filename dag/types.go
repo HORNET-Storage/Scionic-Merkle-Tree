@@ -38,6 +38,7 @@ type DagLeaf struct {
 	AdditionalData    map[string]string
 	MerkleTree        *merkletree.MerkleTree
 	LeafMap           map[string]merkletree.DataBlock
+	Proofs            map[string]*ClassicTreeBranch
 }
 
 type DagLeafBuilder struct {

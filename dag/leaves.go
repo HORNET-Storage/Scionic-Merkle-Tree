@@ -518,6 +518,7 @@ func (leaf *DagLeaf) Clone() *DagLeaf {
 		LeafCount:         leaf.LeafCount,
 		Links:             make(map[string]string),
 		AdditionalData:    make(map[string]string),
+		Proofs:            make(map[string]*ClassicTreeBranch),
 	}
 
 	// Deep copy maps
@@ -527,26 +528,42 @@ func (leaf *DagLeaf) Clone() *DagLeaf {
 	for k, v := range leaf.AdditionalData {
 		cloned.AdditionalData[k] = v
 	}
-
-	// If the original leaf has a merkle tree, preserve it
-	if leaf.MerkleTree != nil && leaf.LeafMap != nil {
-		// Create new leaf map with same data
-		leafMap := make(map[string]merkletree.DataBlock)
-		for k, v := range leaf.LeafMap {
-			if tl, ok := v.(*testLeaf); ok {
-				leafMap[k] = &testLeaf{data: tl.data}
-			} else {
-				// For other types, create a new leaf with the same data
-				data, _ := v.Serialize()
-				leafMap[k] = &testLeaf{data: string(data)}
-			}
+	if leaf.Proofs != nil {
+		for k, v := range leaf.Proofs {
+			cloned.Proofs[k] = v
 		}
+	}
 
-		// Build new merkle tree with same data
-		merkleTree, err := merkletree.New(nil, leafMap)
-		if err == nil {
-			cloned.MerkleTree = merkleTree
-			cloned.LeafMap = leafMap
+	// Copy root-specific fields if this is the root leaf
+	if leaf.Hash == leaf.ParentHash || leaf.Hash == GetHash(leaf.Hash) {
+		cloned.LatestLabel = leaf.LatestLabel
+		cloned.LeafCount = leaf.LeafCount
+		cloned.ParentHash = cloned.Hash // Root is its own parent
+	} else {
+		cloned.ParentHash = leaf.ParentHash
+	}
+
+	// If leaf has multiple children according to CurrentLinkCount,
+	// we need to handle its merkle tree state
+	if leaf.CurrentLinkCount > 1 {
+		if len(leaf.Links) > 1 {
+			// Build merkle tree with current links
+			builder := merkle_tree.CreateTree()
+			for l, h := range leaf.Links {
+				builder.AddLeaf(l, h)
+			}
+			merkleTree, leafMap, err := builder.Build()
+			if err == nil {
+				cloned.MerkleTree = merkleTree
+				cloned.LeafMap = leafMap
+				cloned.ClassicMerkleRoot = merkleTree.Root
+			}
+		} else {
+			// Clear merkle tree if we don't have enough links to rebuild it
+			cloned.MerkleTree = nil
+			cloned.LeafMap = nil
+			// But keep ClassicMerkleRoot as it's part of the leaf's identity
+			cloned.ClassicMerkleRoot = leaf.ClassicMerkleRoot
 		}
 	}
 
@@ -586,7 +603,11 @@ func GetLabel(hash string) string {
 
 func sortMapByKeys(inputMap map[string]string) map[string]string {
 	if inputMap == nil {
-		return inputMap
+		return map[string]string{}
+	}
+
+	if len(inputMap) <= 0 {
+		return map[string]string{}
 	}
 
 	keys := make([]string, 0, len(inputMap))
