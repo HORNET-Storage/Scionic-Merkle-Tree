@@ -3,7 +3,6 @@ package dag
 import (
 	"crypto/sha256"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -86,6 +85,8 @@ func (b *DagLeafBuilder) BuildLeaf(additionalData map[string]string) (*DagLeaf, 
 	}
 
 	merkleRoot := []byte{}
+	var merkleTree *merkletree.MerkleTree
+	var leafMap map[string]merkletree.DataBlock
 
 	if len(b.Links) > 1 {
 		builder := merkle_tree.CreateTree()
@@ -93,7 +94,8 @@ func (b *DagLeafBuilder) BuildLeaf(additionalData map[string]string) (*DagLeaf, 
 			builder.AddLeaf(GetLabel(link), link)
 		}
 
-		merkleTree, _, err := builder.Build()
+		var err error
+		merkleTree, leafMap, err = builder.Build()
 		if err != nil {
 			return nil, err
 		}
@@ -141,7 +143,7 @@ func (b *DagLeafBuilder) BuildLeaf(additionalData map[string]string) (*DagLeaf, 
 		return nil, err
 	}
 
-	result := &DagLeaf{
+	leaf := &DagLeaf{
 		Hash:              c.String(),
 		ItemName:          b.ItemName,
 		Type:              b.LeafType,
@@ -151,9 +153,11 @@ func (b *DagLeafBuilder) BuildLeaf(additionalData map[string]string) (*DagLeaf, 
 		ContentHash:       leafData.ContentHash,
 		Links:             b.Links,
 		AdditionalData:    additionalData,
+		MerkleTree:        merkleTree,
+		LeafMap:           leafMap,
 	}
 
-	return result, nil
+	return leaf, nil
 }
 
 func (b *DagLeafBuilder) BuildRootLeaf(dag *DagBuilder, additionalData map[string]string) (*DagLeaf, error) {
@@ -163,6 +167,8 @@ func (b *DagLeafBuilder) BuildRootLeaf(dag *DagBuilder, additionalData map[strin
 	}
 
 	merkleRoot := []byte{}
+	var merkleTree *merkletree.MerkleTree
+	var leafMap map[string]merkletree.DataBlock
 
 	if len(b.Links) > 1 {
 		builder := merkle_tree.CreateTree()
@@ -170,7 +176,8 @@ func (b *DagLeafBuilder) BuildRootLeaf(dag *DagBuilder, additionalData map[strin
 			builder.AddLeaf(GetLabel(link), link)
 		}
 
-		merkleTree, _, err := builder.Build()
+		var err error
+		merkleTree, leafMap, err = builder.Build()
 		if err != nil {
 			return nil, err
 		}
@@ -224,7 +231,7 @@ func (b *DagLeafBuilder) BuildRootLeaf(dag *DagBuilder, additionalData map[strin
 		return nil, err
 	}
 
-	result := &DagLeaf{
+	leaf := &DagLeaf{
 		Hash:              c.String(),
 		ItemName:          b.ItemName,
 		Type:              b.LeafType,
@@ -236,41 +243,70 @@ func (b *DagLeafBuilder) BuildRootLeaf(dag *DagBuilder, additionalData map[strin
 		ContentHash:       leafData.ContentHash,
 		Links:             b.Links,
 		AdditionalData:    additionalData,
+		MerkleTree:        merkleTree,
+		LeafMap:           leafMap,
 	}
 
-	return result, nil
+	return leaf, nil
+}
+
+func (leaf *DagLeaf) GetIndexForKey(key string) (int, bool) {
+	if leaf.MerkleTree == nil {
+		return -1, false
+	}
+
+	index, exists := leaf.MerkleTree.GetIndexForKey(key)
+	return index, exists
 }
 
 func (leaf *DagLeaf) GetBranch(key string) (*ClassicTreeBranch, error) {
 	if len(leaf.Links) > 1 {
-		t := merkle_tree.CreateTree()
-
-		for k, v := range leaf.Links {
-			t.AddLeaf(k, v)
+		if leaf.MerkleTree == nil {
+			return nil, fmt.Errorf("merkle tree not built for leaf")
 		}
 
-		merkleTree, _, err := t.Build()
-		if err != nil {
-			log.Println("Failed to build merkle tree")
-			return nil, err
+		// Find the label that maps to this hash
+		var label string
+		targetHash := key
+
+		// First try using the key directly as a label
+		if _, exists := leaf.Links[key]; exists {
+			label = key
+			targetHash = leaf.Links[key]
+		} else if HasLabel(key) {
+			// If the key has a label, try finding it in the links
+			label = GetLabel(key)
+			if h, exists := leaf.Links[label]; exists {
+				targetHash = h
+			}
+		} else {
+			// If the key is a hash, find its label
+			for l, h := range leaf.Links {
+				if h == key || GetHash(h) == key {
+					label = l
+					targetHash = h
+					break
+				}
+			}
 		}
 
-		index, result := merkleTree.GetIndexForKey(key)
-		if !result {
-			return nil, fmt.Errorf("unable to find index for given key")
+		if label == "" {
+			return nil, fmt.Errorf("unable to find label for key %s", key)
 		}
 
-		branchLeaf := leaf.Links[key]
+		index, exists := leaf.MerkleTree.GetIndexForKey(label)
+		if !exists {
+			return nil, fmt.Errorf("unable to find index for key %s", label)
+		}
 
 		branch := &ClassicTreeBranch{
-			Leaf:  branchLeaf,
-			Proof: merkleTree.Proofs[index],
+			Leaf:  targetHash,
+			Proof: leaf.MerkleTree.Proofs[index],
 		}
 
 		return branch, nil
-	} else {
-		return nil, nil
 	}
+	return nil, nil
 }
 
 func (leaf *DagLeaf) VerifyBranch(branch *ClassicTreeBranch) error {
@@ -330,25 +366,6 @@ func (leaf *DagLeaf) VerifyLeaf() error {
 		return fmt.Errorf("leaf failed to verify")
 	}
 
-	/*
-		// Should this be here?
-		if leaf.MerkleRoot != "" {
-			for i := 0; i < len(leaf.Links); i++ {
-				branch, err := leaf.GetBranch(i)
-				if err != nil {
-					log.Println("Failed to get leaf branch at index: ", i)
-					return false, err
-				}
-
-				branchResult, err := leaf.VerifyBranch(branch)
-
-				if !branchResult {
-					result = false
-				}
-			}
-		}
-	*/
-
 	return nil
 }
 
@@ -401,25 +418,6 @@ func (leaf *DagLeaf) VerifyRootLeaf() error {
 	if !success {
 		return fmt.Errorf("leaf failed to verify")
 	}
-
-	/*
-		// Should this be here?
-		if leaf.MerkleRoot != "" {
-			for i := 0; i < len(leaf.Links); i++ {
-				branch, err := leaf.GetBranch(i)
-				if err != nil {
-					log.Println("Failed to get leaf branch at index: ", i)
-					return false, err
-				}
-
-				branchResult, err := leaf.VerifyBranch(branch)
-
-				if !branchResult {
-					result = false
-				}
-			}
-		}
-	*/
 
 	return nil
 }
@@ -506,7 +504,7 @@ func (leaf *DagLeaf) AddLink(hash string) {
 }
 
 func (leaf *DagLeaf) Clone() *DagLeaf {
-	return &DagLeaf{
+	cloned := &DagLeaf{
 		Hash:              leaf.Hash,
 		ItemName:          leaf.ItemName,
 		Type:              leaf.Type,
@@ -516,9 +514,41 @@ func (leaf *DagLeaf) Clone() *DagLeaf {
 		CurrentLinkCount:  leaf.CurrentLinkCount,
 		LatestLabel:       leaf.LatestLabel,
 		LeafCount:         leaf.LeafCount,
-		Links:             leaf.Links,
-		AdditionalData:    leaf.AdditionalData,
+		Links:             make(map[string]string),
+		AdditionalData:    make(map[string]string),
 	}
+
+	// Deep copy maps
+	for k, v := range leaf.Links {
+		cloned.Links[k] = v
+	}
+	for k, v := range leaf.AdditionalData {
+		cloned.AdditionalData[k] = v
+	}
+
+	// If the original leaf has a merkle tree, preserve it
+	if leaf.MerkleTree != nil && leaf.LeafMap != nil {
+		// Create new leaf map with same data
+		leafMap := make(map[string]merkletree.DataBlock)
+		for k, v := range leaf.LeafMap {
+			if tl, ok := v.(*testLeaf); ok {
+				leafMap[k] = &testLeaf{data: tl.data}
+			} else {
+				// For other types, create a new leaf with the same data
+				data, _ := v.Serialize()
+				leafMap[k] = &testLeaf{data: string(data)}
+			}
+		}
+
+		// Build new merkle tree with same data
+		merkleTree, err := merkletree.New(nil, leafMap)
+		if err == nil {
+			cloned.MerkleTree = merkleTree
+			cloned.LeafMap = leafMap
+		}
+	}
+
+	return cloned
 }
 
 func (leaf *DagLeaf) SetLabel(label string) {

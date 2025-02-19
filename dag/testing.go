@@ -5,6 +5,7 @@ import (
 	"io/ioutil"
 	"math/rand"
 	"os"
+	"sort"
 	"time"
 )
 
@@ -51,22 +52,30 @@ func createRandomDirsAndFiles(path string, depth int, maxItems int) error {
 }
 
 func FindRandomChild(leaf *DagLeaf, leafs map[string]*DagLeaf) *DagLeaf {
-	if leaf.Type == DirectoryLeafType {
+	if leaf.Type == DirectoryLeafType && len(leaf.Links) > 0 {
 		rand.Seed(time.Now().UnixNano())
-		index := rand.Intn(len(leaf.Links))
 
-		var newLeaf *DagLeaf
-
-		curIndex := 1
-		for label, link := range leaf.Links {
-			if curIndex >= index && label != "0" {
-				newLeaf = leafs[link]
-			}
-
-			curIndex++
+		// Get all links in a sorted slice
+		var labels []string
+		for label := range leaf.Links {
+			labels = append(labels, label)
 		}
+		sort.Strings(labels)
 
-		return newLeaf
+		// Pick a random label
+		randomLabel := labels[rand.Intn(len(labels))]
+		link := leaf.Links[randomLabel]
+
+		childLeaf := leafs[link].Clone()
+		// Preserve merkle tree data
+		if len(childLeaf.Links) > 1 {
+			originalLinks := childLeaf.Links
+			childLeaf.Links = make(map[string]string)
+			for k, v := range originalLinks {
+				childLeaf.Links[k] = v
+			}
+		}
+		return childLeaf
 	}
 
 	return leaf

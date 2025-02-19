@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	merkle_tree "github.com/HORNET-Storage/scionic-merkletree/tree"
 	cbor "github.com/fxamacker/cbor/v2"
 )
 
@@ -253,6 +254,21 @@ func (b *DagBuilder) AddLeaf(leaf *DagLeaf, parentLeaf *DagLeaf) error {
 		if !exists {
 			parentLeaf.AddLink(leaf.Hash)
 		}
+
+		// If parent has more than one link, rebuild its merkle tree
+		if len(parentLeaf.Links) > 1 {
+			builder := merkle_tree.CreateTree()
+			for _, link := range parentLeaf.Links {
+				builder.AddLeaf(GetLabel(link), link)
+			}
+
+			merkleTree, leafMap, err := builder.Build()
+			if err == nil {
+				parentLeaf.MerkleTree = merkleTree
+				parentLeaf.LeafMap = leafMap
+				parentLeaf.ClassicMerkleRoot = merkleTree.Root
+			}
+		}
 	}
 
 	b.Leafs[leaf.Hash] = leaf
@@ -303,46 +319,6 @@ func (dag *Dag) CreateDirectory(path string) error {
 	if err != nil {
 		return err
 	}
-
-	/*
-		cborData, err := dag.ToCBOR()
-		if err != nil {
-			log.Println("Failed to serialize dag into cbor")
-			os.Exit(1)
-		}
-
-		fileName := filepath.Join(path, ".dag")
-		file, err := os.Create(fileName)
-		if err != nil {
-			return err
-		}
-
-		defer file.Close()
-
-		_, err = file.Write(cborData)
-		if err != nil {
-			return fmt.Errorf("failed to write to file: %w", err)
-		}
-	*/
-
-	/*
-		if runtime.GOOS == "windows" {
-			p, err := syscall.UTF16PtrFromString(fileName)
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			attrs, err := syscall.GetFileAttributes(p)
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			err = syscall.SetFileAttributes(p, attrs|syscall.FILE_ATTRIBUTE_HIDDEN)
-			if err != nil {
-				log.Fatal(err)
-			}
-		}
-	*/
 
 	return nil
 }
@@ -425,4 +401,191 @@ func (d *Dag) IterateDag(processLeaf func(leaf *DagLeaf, parent *DagLeaf) error)
 	}
 
 	return iterate(d.Root, nil)
+}
+
+// findParent searches the DAG for a leaf's parent
+func (d *Dag) findParent(leaf *DagLeaf) *DagLeaf {
+	for _, potential := range d.Leafs {
+		if potential.HasLink(leaf.Hash) {
+			return potential
+		}
+	}
+	return nil
+}
+
+// buildVerificationBranch creates a branch containing the leaf and its verification path
+func (d *Dag) buildVerificationBranch(leaf *DagLeaf) (*DagBranch, error) {
+	fmt.Printf("Building verification branch for leaf: %+v\n", leaf)
+	branch := &DagBranch{
+		Leaf:         leaf.Clone(),
+		Path:         make([]*DagLeaf, 0),
+		MerkleProofs: make(map[string]*ClassicTreeBranch),
+	}
+
+	// Find path to root through parent nodes
+	current := leaf
+	for current.Hash != d.Root {
+		parent := d.findParent(current)
+		if parent == nil {
+			fmt.Printf("Failed to find parent for leaf %s\n", current.Hash)
+			return nil, fmt.Errorf("failed to find parent for leaf %s", current.Hash)
+		}
+		fmt.Printf("Found parent for %s: %+v\n", current.Hash, parent)
+
+		// If parent has merkle tree, get proof
+		if len(parent.Links) > 1 {
+			fmt.Printf("Parent has multiple links (%d), getting merkle proof\n", len(parent.Links))
+			fmt.Printf("Parent merkle tree: %+v\n", parent.MerkleTree)
+			fmt.Printf("Parent leaf map: %+v\n", parent.LeafMap)
+
+			// Find the label for current in parent's links
+			var label string
+			for l, h := range parent.Links {
+				if h == current.Hash {
+					label = l
+					break
+				}
+			}
+			if label == "" {
+				return nil, fmt.Errorf("unable to find label for key")
+			}
+
+			proof, err := parent.GetBranch(label)
+			if err != nil {
+				fmt.Printf("Failed to get branch: %v\n", err)
+				return nil, err
+			}
+			fmt.Printf("Got proof for %s: %+v\n", current.Hash, proof)
+			branch.MerkleProofs[parent.Hash] = proof
+		}
+
+		branch.Path = append(branch.Path, parent.Clone())
+		current = parent
+	}
+
+	return branch, nil
+}
+
+// addBranchToPartial adds a branch to the partial DAG
+func (d *Dag) addBranchToPartial(branch *DagBranch, partial *Dag) error {
+	// Add leaf if not present
+	if _, exists := partial.Leafs[branch.Leaf.Hash]; !exists {
+		partial.Leafs[branch.Leaf.Hash] = branch.Leaf
+	}
+
+	// Add path nodes and their merkle proofs
+	for _, pathNode := range branch.Path {
+		if _, exists := partial.Leafs[pathNode.Hash]; !exists {
+			partial.Leafs[pathNode.Hash] = pathNode
+
+			// If node has merkle proof, verify and include required siblings
+			if proof, hasProof := branch.MerkleProofs[pathNode.Hash]; hasProof {
+				err := pathNode.VerifyBranch(proof)
+				if err != nil {
+					return fmt.Errorf("invalid merkle proof for node %s: %w", pathNode.Hash, err)
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// GetPartial returns a new DAG containing only the requested leaves and their verification paths
+func (d *Dag) GetPartial(start, end int) (*Dag, error) {
+	partialDag := &Dag{
+		Leafs: make(map[string]*DagLeaf),
+		Root:  d.Root,
+	}
+
+	// Get root leaf
+	rootLeaf := d.Leafs[d.Root].Clone()
+	fmt.Printf("Root leaf: %+v\n", rootLeaf)
+	partialDag.Leafs[d.Root] = rootLeaf
+
+	// Process each requested leaf
+	for i := start; i <= end; i++ {
+		label := strconv.Itoa(i)
+		fmt.Printf("Processing label %s\n", label)
+
+		// Find and validate leaf
+		var targetLeaf *DagLeaf
+		for _, leaf := range d.Leafs {
+			if GetLabel(leaf.Hash) == label {
+				targetLeaf = leaf
+				fmt.Printf("Found leaf for label %s: %+v\n", label, leaf)
+				break
+			}
+		}
+
+		if targetLeaf == nil {
+			fmt.Printf("No leaf found for label %s\n", label)
+			continue
+		}
+
+		// Build verification path
+		branch, err := d.buildVerificationBranch(targetLeaf)
+		if err != nil {
+			fmt.Printf("Failed to build verification branch for label %s: %v\n", label, err)
+			return nil, err
+		}
+		fmt.Printf("Built verification branch for label %s: %+v\n", label, branch)
+
+		// Add branch to partial DAG
+		err = d.addBranchToPartial(branch, partialDag)
+		if err != nil {
+			fmt.Printf("Failed to add branch to partial DAG for label %s: %v\n", label, err)
+			return nil, err
+		}
+		fmt.Printf("Added branch to partial DAG for label %s\n", label)
+	}
+
+	return partialDag, nil
+}
+
+// VerifyPartial verifies the integrity of a partial DAG
+func (d *Dag) VerifyPartial() error {
+	// Verify each leaf can trace to root with valid proofs
+	for _, leaf := range d.Leafs {
+		if leaf.Hash == d.Root {
+			continue
+		}
+
+		current := leaf
+		for current.Hash != d.Root {
+			parent := d.findParent(current)
+			if parent == nil {
+				return fmt.Errorf("broken path to root for leaf %s", leaf.Hash)
+			}
+
+			// Verify merkle proof if parent has multiple children
+			if len(parent.Links) > 1 {
+				// Find the label for current in parent's links
+				var label string
+				for l, h := range parent.Links {
+					if h == current.Hash {
+						label = l
+						break
+					}
+				}
+				if label == "" {
+					return fmt.Errorf("unable to find label for key")
+				}
+
+				branch, err := parent.GetBranch(label)
+				if err != nil {
+					return err
+				}
+
+				err = parent.VerifyBranch(branch)
+				if err != nil {
+					return fmt.Errorf("invalid merkle proof for node %s: %w", current.Hash, err)
+				}
+			}
+
+			current = parent
+		}
+	}
+
+	return nil
 }

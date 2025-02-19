@@ -36,6 +36,8 @@ type DagLeaf struct {
 	Links             map[string]string
 	ParentHash        string
 	AdditionalData    map[string]string
+	MerkleTree        *merkletree.MerkleTree
+	LeafMap           map[string]merkletree.DataBlock
 }
 
 type DagLeafBuilder struct {
@@ -49,6 +51,20 @@ type DagLeafBuilder struct {
 type ClassicTreeBranch struct {
 	Leaf  string
 	Proof *merkletree.Proof
+}
+
+type DagBranch struct {
+	Leaf         *DagLeaf
+	Path         []*DagLeaf
+	MerkleProofs map[string]*ClassicTreeBranch
+}
+
+type testLeaf struct {
+	data string
+}
+
+func (l *testLeaf) Serialize() ([]byte, error) {
+	return []byte(l.data), nil
 }
 
 type MetaData struct {
