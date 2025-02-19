@@ -47,38 +47,34 @@ func (tc *TreeContent) Build() (*mt.MerkleTree, map[string]mt.DataBlock, error) 
 }
 
 func VerifyTree(tree *mt.MerkleTree, leafs []mt.DataBlock) bool {
-	result := true
+	if len(tree.Proofs) != len(leafs) {
+		return false
+	}
 
-	proofs := tree.Proofs
-	// verify the proofs
-	for i := 0; i < len(proofs); i++ {
-		err := tree.Verify(leafs[i], proofs[i])
+	for i := 0; i < len(leafs); i++ {
+		err := tree.Verify(leafs[i], tree.Proofs[i])
 		if err != nil {
-			fmt.Println("Verification failed for leaf")
-		}
-
-		if err != nil {
-			result = false
+			fmt.Printf("Verification failed for leaf %d: %v\n", i, err)
+			return false
 		}
 	}
 
-	return result
+	return true
 }
 
 func VerifyRoot(root []byte, proofs []*mt.Proof, leafs []mt.DataBlock) bool {
-	result := true
+	if len(proofs) != len(leafs) {
+		return false
+	}
 
 	for i := 0; i < len(leafs); i++ {
 		// if hashFunc is nil, use SHA256 by default
 		err := mt.Verify(leafs[i], proofs[i], root, nil)
 		if err != nil {
-			fmt.Println("Verification failed for leaf")
-		}
-
-		if err != nil {
-			result = false
+			fmt.Printf("Verification failed for leaf %d: %v\n", i, err)
+			return false
 		}
 	}
 
-	return result
+	return true
 }
