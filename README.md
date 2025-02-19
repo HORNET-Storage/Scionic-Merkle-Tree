@@ -1,4 +1,4 @@
-![example workflow](https://github.com/HORNET-Storage/scionic-merkletree/actions/workflows/go.yml/badge.svg)
+![nostr Badge](https://img.shields.io/badge/nostr-8e30eb?style=flat) ![Go Badge](https://img.shields.io/badge/Go-00ADD8?logo=go&logoColor=white) <img src="https://static.wixstatic.com/media/e9326a_3823e7e6a7e14488954bb312d11636da~mv2.png" height="20"> ![example workflow](https://github.com/HORNET-Storage/scionic-merkletree/actions/workflows/go.yml/badge.svg)
 [![codecov](https://codecov.io/gh/HORNET-Storage/scionic-merkletree/graph/badge.svg?token=1UBLJ1YYFI)](https://codecov.io/gh/HORNET-Storage/scionic-merkletree)
 
 
@@ -6,7 +6,7 @@
 
 ## Combining Merkle Trees and Merkle DAGs
 
-We've designed a [new type of Merkle DAG/Merkle Tree hybrid](https://www.hornet.storage/) named Scionic Merkle Trees. Scionic Merkle Trees contain small branches like Classic Merkle Trees, the folder storage ability of Merkle DAGs, and numbered Merkle leaves so anyone can request a range of missing file chunks by listing the range of leaf numbers that correspond to those missing file chunks. LeafSync is the name used for requesting a range of leaf numbers in order to retrieve a batch of missing file chunks. 
+We've designed a [new type of Merkle DAG/Merkle Tree hybrid](https://www.hornet.storage/) known as the Scionic Merkle Tree. Scionic Merkle Trees contain small branches like Classic Merkle Trees, the folder storage support of Merkle DAGs, and numbered Merkle leaves so anyone can sync by requesting a range of missing leaf numbers that correspond to missing file chunks. LeafSync is the name of the simple protocol used to request a range of leaf numbers in order to retrieve a batch of missing file chunks corresponding to the leaf numbers.
 
 ![Tree Comparison Diagram](https://static.wixstatic.com/media/e9326a_ee5ee567806d439b93eaf3ce49afe072~mv2.png)
 
