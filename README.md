@@ -1,5 +1,5 @@
-![nostr Badge](https://img.shields.io/badge/nostr-8e30eb?style=flat) ![Go Badge](https://img.shields.io/badge/Go-00ADD8?logo=go&logoColor=white) <img src="https://static.wixstatic.com/media/e9326a_3823e7e6a7e14488954bb312d11636da~mv2.png" height="20"> ![example workflow](https://github.com/HORNET-Storage/scionic-merkletree/actions/workflows/go.yml/badge.svg)
-[![codecov](https://codecov.io/gh/HORNET-Storage/scionic-merkletree/graph/badge.svg?token=1UBLJ1YYFI)](https://codecov.io/gh/HORNET-Storage/scionic-merkletree)
+![nostr Badge](https://img.shields.io/badge/nostr-8e30eb?style=flat) ![Go Badge](https://img.shields.io/badge/Go-00ADD8?logo=go&logoColor=white) <img src="https://static.wixstatic.com/media/e9326a_3823e7e6a7e14488954bb312d11636da~mv2.png" height="20"> ![example workflow](https://github.com/HORNET-Storage/Scionic-Merkle-Tree/actions/workflows/go.yml/badge.svg)
+[![codecov](https://codecov.io/gh/HORNET-Storage/Scionic-Merkle-Tree/graph/badge.svg?token=1UBLJ1YYFI)](https://codecov.io/gh/HORNET-Storage/Scionic-Merkle-Tree)
 
 
 # Scionic Merkle Trees
@@ -67,7 +67,7 @@ To further enhance the functionality of Scionic Merkle Trees and support efficie
 
 ## Install
 ```
-go get github.com/HORNET-Storage/scionic-merkletree/dag
+go get github.com/HORNET-Storage/Scionic-Merkle-Tree/dag
 ```
 
 ## Example Usage

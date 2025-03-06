@@ -9,11 +9,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/HORNET-Storage/scionic-merkletree/merkletree"
+	"github.com/HORNET-Storage/Scionic-Merkle-Tree/merkletree"
 
 	cbor "github.com/fxamacker/cbor/v2"
 
-	merkle_tree "github.com/HORNET-Storage/scionic-merkletree/tree"
+	merkle_tree "github.com/HORNET-Storage/Scionic-Merkle-Tree/tree"
 
 	"github.com/ipfs/go-cid"
 	mc "github.com/multiformats/go-multicodec"

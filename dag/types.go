@@ -1,7 +1,7 @@
 package dag
 
 import (
-	"github.com/HORNET-Storage/scionic-merkletree/merkletree"
+	"github.com/HORNET-Storage/Scionic-Merkle-Tree/merkletree"
 )
 
 var ChunkSize = 2048 * 1024 // 2048 * 1024 bytes = 2 megabytes

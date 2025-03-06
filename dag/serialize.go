@@ -3,7 +3,7 @@ package dag
 import (
 	"encoding/json"
 
-	merkle_tree "github.com/HORNET-Storage/scionic-merkletree/tree"
+	merkle_tree "github.com/HORNET-Storage/Scionic-Merkle-Tree/tree"
 	cbor "github.com/fxamacker/cbor/v2"
 )
 
