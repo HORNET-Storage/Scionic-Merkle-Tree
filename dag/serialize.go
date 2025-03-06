@@ -29,6 +29,13 @@ type SerializableDagLeaf struct {
 	StoredProofs      map[string]*ClassicTreeBranch `json:"stored_proofs,omitempty" cbor:"stored_proofs,omitempty"`
 }
 
+// SerializableTransmissionPacket is a minimal version of TransmissionPacket for efficient serialization
+type SerializableTransmissionPacket struct {
+	Leaf       *SerializableDagLeaf
+	ParentHash string
+	Proofs     map[string]*ClassicTreeBranch `json:"proofs,omitempty" cbor:"proofs,omitempty"`
+}
+
 // ToSerializable converts a Dag to its serializable form
 func (dag *Dag) ToSerializable() *SerializableDag {
 	serializable := &SerializableDag{
@@ -186,4 +193,99 @@ func FromJSON(data []byte) (*Dag, error) {
 		return nil, err
 	}
 	return FromSerializable(&serializable), nil
+}
+
+// ToSerializable converts a TransmissionPacket to its serializable form
+func (packet *TransmissionPacket) ToSerializable() *SerializableTransmissionPacket {
+	serializable := &SerializableTransmissionPacket{
+		Leaf:       packet.Leaf.ToSerializable(),
+		ParentHash: packet.ParentHash,
+		Proofs:     make(map[string]*ClassicTreeBranch),
+	}
+
+	// Copy proofs
+	if packet.Proofs != nil {
+		for k, v := range packet.Proofs {
+			serializable.Proofs[k] = v
+		}
+	}
+
+	return serializable
+}
+
+// TransmissionPacketFromSerializable reconstructs a TransmissionPacket from its serializable form
+func TransmissionPacketFromSerializable(s *SerializableTransmissionPacket) *TransmissionPacket {
+	// Create a DagLeaf from the serializable leaf
+	leaf := &DagLeaf{
+		Hash:              s.Leaf.Hash,
+		ItemName:          s.Leaf.ItemName,
+		Type:              s.Leaf.Type,
+		ContentHash:       s.Leaf.ContentHash,
+		Content:           s.Leaf.Content,
+		ClassicMerkleRoot: s.Leaf.ClassicMerkleRoot,
+		CurrentLinkCount:  s.Leaf.CurrentLinkCount,
+		LatestLabel:       s.Leaf.LatestLabel,
+		LeafCount:         s.Leaf.LeafCount,
+		Links:             make(map[string]string),
+		AdditionalData:    make(map[string]string),
+		Proofs:            make(map[string]*ClassicTreeBranch),
+	}
+
+	// Copy and sort links
+	leaf.Links = sortMapByKeys(s.Leaf.Links)
+
+	// Copy and sort additional data
+	leaf.AdditionalData = sortMapByKeys(s.Leaf.AdditionalData)
+
+	// Copy stored proofs
+	if s.Leaf.StoredProofs != nil {
+		for k, v := range s.Leaf.StoredProofs {
+			leaf.Proofs[k] = v
+		}
+	}
+
+	packet := &TransmissionPacket{
+		Leaf:       leaf,
+		ParentHash: s.ParentHash,
+		Proofs:     make(map[string]*ClassicTreeBranch),
+	}
+
+	// Copy proofs
+	if s.Proofs != nil {
+		for k, v := range s.Proofs {
+			packet.Proofs[k] = v
+		}
+	}
+
+	return packet
+}
+
+// ToCBOR serializes a TransmissionPacket to CBOR format
+func (packet *TransmissionPacket) ToCBOR() ([]byte, error) {
+	serializable := packet.ToSerializable()
+	return cbor.Marshal(serializable)
+}
+
+// ToJSON serializes a TransmissionPacket to JSON format
+func (packet *TransmissionPacket) ToJSON() ([]byte, error) {
+	serializable := packet.ToSerializable()
+	return json.MarshalIndent(serializable, "", "  ")
+}
+
+// TransmissionPacketFromCBOR deserializes a TransmissionPacket from CBOR format
+func TransmissionPacketFromCBOR(data []byte) (*TransmissionPacket, error) {
+	var serializable SerializableTransmissionPacket
+	if err := cbor.Unmarshal(data, &serializable); err != nil {
+		return nil, err
+	}
+	return TransmissionPacketFromSerializable(&serializable), nil
+}
+
+// TransmissionPacketFromJSON deserializes a TransmissionPacket from JSON format
+func TransmissionPacketFromJSON(data []byte) (*TransmissionPacket, error) {
+	var serializable SerializableTransmissionPacket
+	if err := json.Unmarshal(data, &serializable); err != nil {
+		return nil, err
+	}
+	return TransmissionPacketFromSerializable(&serializable), nil
 }

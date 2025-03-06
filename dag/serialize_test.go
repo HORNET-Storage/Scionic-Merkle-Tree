@@ -131,4 +131,61 @@ func TestSerialization(t *testing.T) {
 			t.Errorf("Failed to recreate directory from deserialized DAG: %v", err)
 		}
 	})
+
+	t.Run("TransmissionPacket", func(t *testing.T) {
+		// Get a sequence of transmission packets
+		sequence := originalDag.GetLeafSequence()
+		if len(sequence) == 0 {
+			t.Fatal("No transmission packets generated")
+		}
+
+		// Test the first packet
+		packet := sequence[0]
+
+		// Serialize to JSON
+		jsonData, err := packet.ToJSON()
+		if err != nil {
+			t.Fatalf("Failed to serialize TransmissionPacket to JSON: %v", err)
+		}
+
+		// Deserialize from JSON
+		deserializedPacket, err := TransmissionPacketFromJSON(jsonData)
+		if err != nil {
+			t.Fatalf("Failed to deserialize TransmissionPacket from JSON: %v", err)
+		}
+
+		// Verify the deserialized packet
+		if packet.Leaf.Hash != deserializedPacket.Leaf.Hash {
+			t.Errorf("Leaf hash mismatch: expected %s, got %s", packet.Leaf.Hash, deserializedPacket.Leaf.Hash)
+		}
+		if packet.ParentHash != deserializedPacket.ParentHash {
+			t.Errorf("Parent hash mismatch: expected %s, got %s", packet.ParentHash, deserializedPacket.ParentHash)
+		}
+		if len(packet.Proofs) != len(deserializedPacket.Proofs) {
+			t.Errorf("Proofs count mismatch: expected %d, got %d", len(packet.Proofs), len(deserializedPacket.Proofs))
+		}
+
+		// Serialize to CBOR
+		cborData, err := packet.ToCBOR()
+		if err != nil {
+			t.Fatalf("Failed to serialize TransmissionPacket to CBOR: %v", err)
+		}
+
+		// Deserialize from CBOR
+		deserializedPacket, err = TransmissionPacketFromCBOR(cborData)
+		if err != nil {
+			t.Fatalf("Failed to deserialize TransmissionPacket from CBOR: %v", err)
+		}
+
+		// Verify the deserialized packet
+		if packet.Leaf.Hash != deserializedPacket.Leaf.Hash {
+			t.Errorf("Leaf hash mismatch: expected %s, got %s", packet.Leaf.Hash, deserializedPacket.Leaf.Hash)
+		}
+		if packet.ParentHash != deserializedPacket.ParentHash {
+			t.Errorf("Parent hash mismatch: expected %s, got %s", packet.ParentHash, deserializedPacket.ParentHash)
+		}
+		if len(packet.Proofs) != len(deserializedPacket.Proofs) {
+			t.Errorf("Proofs count mismatch: expected %d, got %d", len(packet.Proofs), len(deserializedPacket.Proofs))
+		}
+	})
 }

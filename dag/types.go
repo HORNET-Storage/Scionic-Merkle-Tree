@@ -60,6 +60,12 @@ type DagBranch struct {
 	MerkleProofs map[string]*ClassicTreeBranch
 }
 
+type TransmissionPacket struct {
+	Leaf       *DagLeaf
+	ParentHash string
+	Proofs     map[string]*ClassicTreeBranch
+}
+
 type testLeaf struct {
 	data string
 }

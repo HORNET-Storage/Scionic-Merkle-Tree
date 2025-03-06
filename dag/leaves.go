@@ -42,8 +42,8 @@ func (b *DagLeafBuilder) AddLink(label string, hash string) {
 }
 
 func (b *DagBuilder) GetLatestLabel() string {
-	var result string = "1"
-	var latestLabel int64 = 1
+	var result string = "0"
+	var latestLabel int64 = 0
 	for hash := range b.Leafs {
 		label := GetLabel(hash)
 

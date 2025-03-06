@@ -464,14 +464,16 @@ func (d *Dag) IterateDag(processLeaf func(leaf *DagLeaf, parent *DagLeaf) error)
 	return iterate(d.Root, nil)
 }
 
-// IsPartial returns true if this DAG is a partial DAG (has pruned links)
+// IsPartial returns true if this DAG is a partial DAG (has fewer leaves than the total count)
 func (d *Dag) IsPartial() bool {
-	for _, leaf := range d.Leafs {
-		if len(leaf.Links) < leaf.CurrentLinkCount {
-			return true
-		}
+	// Get the root leaf
+	rootLeaf := d.Leafs[d.Root]
+	if rootLeaf == nil {
+		return true // If root leaf is missing, it's definitely partial
 	}
-	return false
+
+	// Check if the number of leaves in the DAG matches the total leaf count
+	return len(d.Leafs) < rootLeaf.LeafCount
 }
 
 // pruneIrrelevantLinks removes links that aren't needed for partial verification
@@ -707,11 +709,98 @@ func (d *Dag) GetPartial(start, end int) (*Dag, error) {
 	return partialDag, nil
 }
 
-// Helper function to get keys from a map for debugging
-func getMapKeys(m map[string]*ClassicTreeBranch) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
+// GetLeafSequence returns an ordered sequence of leaves for transmission
+// Each packet contains a leaf, its parent hash, and any proofs needed for verification
+func (d *Dag) GetLeafSequence() []*TransmissionPacket {
+	var sequence []*TransmissionPacket
+	visited := make(map[string]bool)
+
+	rootLeaf := d.Leafs[d.Root]
+	if rootLeaf == nil {
+		return sequence
 	}
-	return keys
+
+	totalLeafCount := rootLeaf.LeafCount
+
+	rootLeafClone := rootLeaf.Clone()
+	rootLeafClone.Links = make(map[string]string)
+
+	rootPacket := &TransmissionPacket{
+		Leaf:       rootLeafClone,
+		ParentHash: "",
+		Proofs:     make(map[string]*ClassicTreeBranch),
+	}
+	sequence = append(sequence, rootPacket)
+	visited[d.Root] = true
+
+	queue := []string{d.Root}
+	for len(queue) > 0 && len(sequence) <= totalLeafCount {
+		current := queue[0]
+		queue = queue[1:]
+
+		currentLeaf := d.Leafs[current]
+
+		var sortedLinks []string
+		for _, link := range currentLeaf.Links {
+			sortedLinks = append(sortedLinks, link)
+		}
+		sort.Strings(sortedLinks)
+
+		for _, childHash := range sortedLinks {
+			if !visited[childHash] && len(sequence) <= totalLeafCount {
+				branch, err := d.buildVerificationBranch(d.Leafs[childHash])
+				if err != nil {
+					continue
+				}
+
+				leafClone := d.Leafs[childHash].Clone()
+				leafClone.Links = make(map[string]string)
+
+				packet := &TransmissionPacket{
+					Leaf:       leafClone,
+					ParentHash: current,
+					Proofs:     make(map[string]*ClassicTreeBranch),
+				}
+
+				for _, pathNode := range branch.Path {
+					if pathNode.Proofs != nil {
+						for k, v := range pathNode.Proofs {
+							packet.Proofs[k] = v
+						}
+					}
+				}
+
+				sequence = append(sequence, packet)
+				visited[childHash] = true
+				queue = append(queue, childHash)
+			}
+		}
+	}
+
+	return sequence
+}
+
+func (d *Dag) ApplyTransmissionPacket(packet *TransmissionPacket) {
+	d.Leafs[packet.Leaf.Hash] = packet.Leaf
+
+	if packet.ParentHash != "" {
+		if parent, exists := d.Leafs[packet.ParentHash]; exists {
+			label := GetLabel(packet.Leaf.Hash)
+			if label != "" {
+				parent.Links[label] = packet.Leaf.Hash
+			}
+		}
+	}
+
+	for leafHash, proof := range packet.Proofs {
+		for _, leaf := range d.Leafs {
+			if leaf.HasLink(leafHash) {
+				if leaf.Proofs == nil {
+					leaf.Proofs = make(map[string]*ClassicTreeBranch)
+				}
+				leaf.Proofs[leafHash] = proof
+				break
+			}
+		}
+	}
 }
