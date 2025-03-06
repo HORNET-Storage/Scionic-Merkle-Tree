@@ -709,9 +709,137 @@ func (d *Dag) GetPartial(start, end int) (*Dag, error) {
 	return partialDag, nil
 }
 
+// getPartialLeafSequence returns an ordered sequence of leaves for transmission from a partial DAG
+// This is an internal method used by GetLeafSequence when dealing with partial DAGs
+func (d *Dag) getPartialLeafSequence() []*TransmissionPacket {
+	var sequence []*TransmissionPacket
+
+	// Get the root leaf
+	rootLeaf := d.Leafs[d.Root]
+	if rootLeaf == nil {
+		return sequence // Return empty sequence if root leaf is missing
+	}
+
+	// First, build a map of proofs organized by parent hash and child hash
+	// This will allow us to look up the proof for a specific child when creating its packet
+	proofMap := make(map[string]map[string]*ClassicTreeBranch)
+
+	// Populate the proof map from all leaves in the partial DAG
+	for _, leaf := range d.Leafs {
+		if len(leaf.Proofs) > 0 {
+			// Create an entry for this parent if it doesn't exist
+			if _, exists := proofMap[leaf.Hash]; !exists {
+				proofMap[leaf.Hash] = make(map[string]*ClassicTreeBranch)
+			}
+
+			// Add all proofs from this leaf to the map
+			for childHash, proof := range leaf.Proofs {
+				proofMap[leaf.Hash][childHash] = proof
+			}
+		}
+	}
+
+	// Now perform BFS traversal similar to the full DAG method
+	visited := make(map[string]bool)
+
+	// Start with the root
+	rootLeafClone := rootLeaf.Clone()
+
+	// We need to preserve the original links for the root leaf
+	// because they're part of its identity and hash calculation
+	originalLinks := make(map[string]string)
+	for k, v := range rootLeaf.Links {
+		originalLinks[k] = v
+	}
+
+	// Clear links for transmission (they'll be reconstructed on the receiving end)
+	rootLeafClone.Links = make(map[string]string)
+
+	// We need to preserve these fields for verification
+	// but clear proofs for the root packet - they'll be sent with child packets
+	originalMerkleRoot := rootLeafClone.ClassicMerkleRoot
+	originalLatestLabel := rootLeafClone.LatestLabel
+	originalLeafCount := rootLeafClone.LeafCount
+
+	rootLeafClone.Proofs = nil
+
+	// Restore the critical fields
+	rootLeafClone.ClassicMerkleRoot = originalMerkleRoot
+	rootLeafClone.LatestLabel = originalLatestLabel
+	rootLeafClone.LeafCount = originalLeafCount
+
+	rootPacket := &TransmissionPacket{
+		Leaf:       rootLeafClone,
+		ParentHash: "", // Root has no parent
+		Proofs:     make(map[string]*ClassicTreeBranch),
+	}
+	sequence = append(sequence, rootPacket)
+	visited[d.Root] = true
+
+	// Restore the original links for the root leaf in the DAG
+	rootLeaf.Links = originalLinks
+
+	// BFS traversal
+	queue := []string{d.Root}
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+
+		currentLeaf := d.Leafs[current]
+
+		// Sort links for deterministic order
+		var sortedLinks []string
+		for _, link := range currentLeaf.Links {
+			sortedLinks = append(sortedLinks, link)
+		}
+		sort.Strings(sortedLinks)
+
+		// Process each child
+		for _, childHash := range sortedLinks {
+			if !visited[childHash] {
+				childLeaf := d.Leafs[childHash]
+				if childLeaf == nil {
+					continue // Skip if child leaf doesn't exist in this partial DAG
+				}
+
+				// Clone the leaf and clear its links for transmission
+				leafClone := childLeaf.Clone()
+				leafClone.Links = make(map[string]string)
+				leafClone.Proofs = nil // Clear proofs from the leaf
+
+				packet := &TransmissionPacket{
+					Leaf:       leafClone,
+					ParentHash: current,
+					Proofs:     make(map[string]*ClassicTreeBranch),
+				}
+
+				// Add the proof for this specific child from the proof map
+				if parentProofs, exists := proofMap[current]; exists {
+					if proof, hasProof := parentProofs[childHash]; hasProof {
+						packet.Proofs[childHash] = proof
+					}
+				}
+
+				sequence = append(sequence, packet)
+				visited[childHash] = true
+				queue = append(queue, childHash)
+			}
+		}
+	}
+
+	return sequence
+}
+
 // GetLeafSequence returns an ordered sequence of leaves for transmission
 // Each packet contains a leaf, its parent hash, and any proofs needed for verification
 func (d *Dag) GetLeafSequence() []*TransmissionPacket {
+	// Check if this is a partial DAG
+	if d.IsPartial() {
+		// Use specialized method for partial DAGs
+		return d.getPartialLeafSequence()
+	}
+
+	// Original implementation for complete DAGs
 	var sequence []*TransmissionPacket
 	visited := make(map[string]bool)
 

@@ -516,6 +516,7 @@ func (leaf *DagLeaf) Clone() *DagLeaf {
 		CurrentLinkCount:  leaf.CurrentLinkCount,
 		LatestLabel:       leaf.LatestLabel,
 		LeafCount:         leaf.LeafCount,
+		ParentHash:        leaf.ParentHash,
 		Links:             make(map[string]string),
 		AdditionalData:    make(map[string]string),
 		Proofs:            make(map[string]*ClassicTreeBranch),
@@ -534,38 +535,8 @@ func (leaf *DagLeaf) Clone() *DagLeaf {
 		}
 	}
 
-	// Copy root-specific fields if this is the root leaf
-	if leaf.Hash == leaf.ParentHash || leaf.Hash == GetHash(leaf.Hash) {
-		cloned.LatestLabel = leaf.LatestLabel
-		cloned.LeafCount = leaf.LeafCount
-		cloned.ParentHash = cloned.Hash // Root is its own parent
-	} else {
-		cloned.ParentHash = leaf.ParentHash
-	}
-
-	// If leaf has multiple children according to CurrentLinkCount,
-	// we need to handle its merkle tree state
-	if leaf.CurrentLinkCount > 1 {
-		if len(leaf.Links) > 1 {
-			// Build merkle tree with current links
-			builder := merkle_tree.CreateTree()
-			for l, h := range leaf.Links {
-				builder.AddLeaf(l, h)
-			}
-			merkleTree, leafMap, err := builder.Build()
-			if err == nil {
-				cloned.MerkleTree = merkleTree
-				cloned.LeafMap = leafMap
-				cloned.ClassicMerkleRoot = merkleTree.Root
-			}
-		} else {
-			// Clear merkle tree if we don't have enough links to rebuild it
-			cloned.MerkleTree = nil
-			cloned.LeafMap = nil
-			// But keep ClassicMerkleRoot as it's part of the leaf's identity
-			cloned.ClassicMerkleRoot = leaf.ClassicMerkleRoot
-		}
-	}
+	// MerkleTree and LeafMap are not deep-copied because they're regenerated when needed
+	// But we preserve the ClassicMerkleRoot which is part of the leaf's identity
 
 	return cloned
 }
