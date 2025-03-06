@@ -66,18 +66,6 @@ type TransmissionPacket struct {
 	Proofs     map[string]*ClassicTreeBranch
 }
 
-type testLeaf struct {
-	data string
-}
-
-func (l *testLeaf) Serialize() ([]byte, error) {
-	return []byte(l.data), nil
-}
-
-type MetaData struct {
-	Deleted []string
-}
-
 func SetChunkSize(size int) {
 	ChunkSize = size
 }
