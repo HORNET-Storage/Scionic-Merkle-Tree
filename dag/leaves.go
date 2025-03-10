@@ -325,6 +325,10 @@ func (leaf *DagLeaf) VerifyBranch(branch *ClassicTreeBranch) error {
 func (leaf *DagLeaf) VerifyLeaf() error {
 	additionalData := sortMapByKeys(leaf.AdditionalData)
 
+	if leaf.ClassicMerkleRoot == nil || len(leaf.ClassicMerkleRoot) <= 0 {
+		leaf.ClassicMerkleRoot = []byte{}
+	}
+
 	leafData := struct {
 		ItemName         string
 		Type             LeafType
@@ -373,6 +377,10 @@ func (leaf *DagLeaf) VerifyLeaf() error {
 
 func (leaf *DagLeaf) VerifyRootLeaf() error {
 	additionalData := sortMapByKeys(leaf.AdditionalData)
+
+	if leaf.ClassicMerkleRoot == nil || len(leaf.ClassicMerkleRoot) <= 0 {
+		leaf.ClassicMerkleRoot = []byte{}
+	}
 
 	leafData := struct {
 		ItemName         string
