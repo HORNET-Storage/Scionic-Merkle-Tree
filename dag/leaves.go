@@ -454,10 +454,34 @@ func (leaf *DagLeaf) CreateDirectoryLeaf(path string, dag *Dag) error {
 		var content []byte
 
 		if len(leaf.Links) > 0 {
-			for _, link := range leaf.Links {
-				childLeaf := dag.Leafs[link]
+			var sortedLinks []struct {
+				Label int
+				Link  string
+			}
+
+			for label, link := range leaf.Links {
+				labelNum, err := strconv.Atoi(label)
+				if err != nil {
+					return fmt.Errorf("invalid link label: %s", label)
+				}
+
+				sortedLinks = append(sortedLinks, struct {
+					Label int
+					Link  string
+				}{
+					Label: labelNum,
+					Link:  link,
+				})
+			}
+
+			sort.Slice(sortedLinks, func(i, j int) bool {
+				return sortedLinks[i].Label < sortedLinks[j].Label
+			})
+
+			for _, item := range sortedLinks {
+				childLeaf := dag.Leafs[item.Link]
 				if childLeaf == nil {
-					return fmt.Errorf("invalid link: %s", link)
+					return fmt.Errorf("invalid link: %s", item.Link)
 				}
 
 				content = append(content, childLeaf.Content...)
