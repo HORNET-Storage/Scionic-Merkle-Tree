@@ -53,3 +53,5 @@ debug/
 
 # Logs
 *.log
+
+main.go

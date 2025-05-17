@@ -54,7 +54,7 @@ func CreateDag(path string, timestampRoot bool) (*Dag, error) {
 		}
 	}
 
-	dag, err := createDag(path, additionalData)
+	dag, err := createDag(path, additionalData, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -63,7 +63,7 @@ func CreateDag(path string, timestampRoot bool) (*Dag, error) {
 }
 
 func CreateDagAdvanced(path string, additionalData map[string]string) (*Dag, error) {
-	dag, err := createDag(path, additionalData)
+	dag, err := createDag(path, additionalData, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +71,17 @@ func CreateDagAdvanced(path string, additionalData map[string]string) (*Dag, err
 	return dag, nil
 }
 
-func createDag(path string, additionalData map[string]string) (*Dag, error) {
+// CreateDagCustom creates a DAG with custom metadata for each leaf
+func CreateDagCustom(path string, rootAdditionalData map[string]string, processor LeafProcessor) (*Dag, error) {
+	dag, err := createDag(path, rootAdditionalData, processor)
+	if err != nil {
+		return nil, err
+	}
+
+	return dag, nil
+}
+
+func createDag(path string, additionalData map[string]string, processor LeafProcessor) (*Dag, error) {
 	dag := CreateDagBuilder()
 
 	fileInfo, err := os.Stat(path)
@@ -89,9 +99,9 @@ func createDag(path string, additionalData map[string]string) (*Dag, error) {
 	var leaf *DagLeaf
 
 	if fileInfo.IsDir() {
-		leaf, err = processDirectory(dirEntry, &parentPath, dag, true, additionalData)
+		leaf, err = processDirectory(dirEntry, path, &parentPath, dag, true, additionalData, processor)
 	} else {
-		leaf, err = processFile(dirEntry, &parentPath, dag, true, additionalData)
+		leaf, err = processFile(dirEntry, path, &parentPath, dag, true, additionalData, processor)
 	}
 
 	if err != nil {
@@ -104,14 +114,16 @@ func createDag(path string, additionalData map[string]string) (*Dag, error) {
 	return dag.BuildDag(rootHash), nil
 }
 
-func processEntry(entry fs.DirEntry, path *string, dag *DagBuilder) (*DagLeaf, error) {
+func processEntry(entry fs.DirEntry, fullPath string, path *string, dag *DagBuilder, processor LeafProcessor) (*DagLeaf, error) {
 	var result *DagLeaf
 	var err error
 
+	entryPath := filepath.Join(*path, entry.Name())
+
 	if entry.IsDir() {
-		result, err = processDirectory(entry, path, dag, false, nil)
+		result, err = processDirectory(entry, entryPath, path, dag, false, nil, processor)
 	} else {
-		result, err = processFile(entry, path, dag, false, nil)
+		result, err = processFile(entry, entryPath, path, dag, false, nil, processor)
 	}
 
 	if err != nil {
@@ -121,26 +133,40 @@ func processEntry(entry fs.DirEntry, path *string, dag *DagBuilder) (*DagLeaf, e
 	return result, nil
 }
 
-func processDirectory(entry fs.DirEntry, path *string, dag *DagBuilder, isRoot bool, additionalData map[string]string) (*DagLeaf, error) {
-	entryPath := filepath.Join(*path, entry.Name())
-
-	relPath, err := filepath.Rel(*path, entryPath)
+func processDirectory(entry fs.DirEntry, fullPath string, path *string, dag *DagBuilder, isRoot bool, additionalData map[string]string, processor LeafProcessor) (*DagLeaf, error) {
+	relPath, err := filepath.Rel(*path, fullPath)
 	if err != nil {
 		return nil, err
+	}
+
+	// Apply processor if provided and not root (root uses additionalData directly)
+	if processor != nil && !isRoot {
+		customData := processor(fullPath, relPath, entry, isRoot, DirectoryLeafType)
+		if customData != nil {
+			// Create additionalData if it's nil
+			if additionalData == nil {
+				additionalData = make(map[string]string)
+			}
+
+			// Merge custom data
+			for k, v := range customData {
+				additionalData[k] = v
+			}
+		}
 	}
 
 	builder := CreateDagLeafBuilder(relPath)
 	builder.SetType(DirectoryLeafType)
 
-	entries, err := os.ReadDir(entryPath)
+	entries, err := os.ReadDir(fullPath)
 	if err != nil {
 		return nil, err
 	}
 
 	var result *DagLeaf
 
-	for _, entry := range entries {
-		leaf, err := processEntry(entry, &entryPath, dag)
+	for _, childEntry := range entries {
+		leaf, err := processEntry(childEntry, filepath.Join(fullPath, childEntry.Name()), &fullPath, dag, processor)
 		if err != nil {
 			return nil, err
 		}
@@ -154,7 +180,7 @@ func processDirectory(entry fs.DirEntry, path *string, dag *DagBuilder, isRoot b
 	if isRoot {
 		result, err = builder.BuildRootLeaf(dag, additionalData)
 	} else {
-		result, err = builder.BuildLeaf(nil)
+		result, err = builder.BuildLeaf(additionalData)
 	}
 
 	if err != nil {
@@ -164,19 +190,33 @@ func processDirectory(entry fs.DirEntry, path *string, dag *DagBuilder, isRoot b
 	return result, nil
 }
 
-func processFile(entry fs.DirEntry, path *string, dag *DagBuilder, isRoot bool, additionalData map[string]string) (*DagLeaf, error) {
-	entryPath := filepath.Join(*path, entry.Name())
-
-	relPath, err := filepath.Rel(*path, entryPath)
+func processFile(entry fs.DirEntry, fullPath string, path *string, dag *DagBuilder, isRoot bool, additionalData map[string]string, processor LeafProcessor) (*DagLeaf, error) {
+	relPath, err := filepath.Rel(*path, fullPath)
 	if err != nil {
 		return nil, err
+	}
+
+	// Apply processor if provided and not root (root uses additionalData directly)
+	if processor != nil && !isRoot {
+		customData := processor(fullPath, relPath, entry, isRoot, FileLeafType)
+		if customData != nil {
+			// Create additionalData if it's nil
+			if additionalData == nil {
+				additionalData = make(map[string]string)
+			}
+
+			// Merge custom data
+			for k, v := range customData {
+				additionalData[k] = v
+			}
+		}
 	}
 
 	var result *DagLeaf
 	builder := CreateDagLeafBuilder(relPath)
 	builder.SetType(FileLeafType)
 
-	fileData, err := os.ReadFile(entryPath)
+	fileData, err := os.ReadFile(fullPath)
 	if err != nil {
 		return nil, err
 	}
@@ -194,6 +234,7 @@ func processFile(entry fs.DirEntry, path *string, dag *DagBuilder, isRoot bool, 
 			chunkBuilder.SetType(ChunkLeafType)
 			chunkBuilder.SetData(chunk)
 
+			// Chunks don't get custom metadata
 			chunkLeaf, err := chunkBuilder.BuildLeaf(nil)
 			if err != nil {
 				return nil, err
@@ -209,7 +250,7 @@ func processFile(entry fs.DirEntry, path *string, dag *DagBuilder, isRoot bool, 
 	if isRoot {
 		result, err = builder.BuildRootLeaf(dag, additionalData)
 	} else {
-		result, err = builder.BuildLeaf(nil)
+		result, err = builder.BuildLeaf(additionalData)
 	}
 
 	if err != nil {

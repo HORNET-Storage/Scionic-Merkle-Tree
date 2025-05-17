@@ -1,6 +1,8 @@
 package dag
 
 import (
+	"io/fs"
+
 	"github.com/HORNET-Storage/Scionic-Merkle-Tree/merkletree"
 )
 
@@ -13,6 +15,15 @@ const (
 	ChunkLeafType     LeafType = "chunk"
 	DirectoryLeafType LeafType = "directory"
 )
+
+// LeafProcessor is a function that generates metadata for a leaf
+// path: The full path to the file/directory
+// relPath: The relative path within the DAG
+// entry: The file/directory entry information
+// isRoot: Whether this is the root leaf
+// leafType: The type of leaf (file, directory, chunk)
+// Returns additional metadata to be added to the leaf
+type LeafProcessor func(path string, relPath string, entry fs.DirEntry, isRoot bool, leafType LeafType) map[string]string
 
 type Dag struct {
 	Root  string
