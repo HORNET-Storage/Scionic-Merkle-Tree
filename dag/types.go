@@ -6,7 +6,9 @@ import (
 	"github.com/HORNET-Storage/Scionic-Merkle-Tree/merkletree"
 )
 
-var ChunkSize = 2048 * 1024 // 2048 * 1024 bytes = 2 megabytes
+const DefaultChunkSize = 2048 * 1024 // 2048 * 1024 bytes = 2 megabytes
+
+var ChunkSize = DefaultChunkSize
 
 type LeafType string
 
@@ -79,4 +81,12 @@ type TransmissionPacket struct {
 
 func SetChunkSize(size int) {
 	ChunkSize = size
+}
+
+func DisableChunking() {
+	SetChunkSize(-1)
+}
+
+func SetDefaultChunkSize() {
+	SetChunkSize(DefaultChunkSize)
 }

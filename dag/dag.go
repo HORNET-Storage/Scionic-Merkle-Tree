@@ -224,26 +224,30 @@ func processFile(entry fs.DirEntry, fullPath string, path *string, dag *DagBuild
 	builder.SetType(FileLeafType)
 	fileChunks := chunkFile(fileData, ChunkSize)
 
-	if len(fileChunks) == 1 {
-		builder.SetData(fileChunks[0])
+	if ChunkSize <= 0 {
+		builder.SetData(fileData)
 	} else {
-		for i, chunk := range fileChunks {
-			chunkEntryPath := filepath.Join(relPath, strconv.Itoa(i))
-			chunkBuilder := CreateDagLeafBuilder(chunkEntryPath)
+		if len(fileChunks) == 1 {
+			builder.SetData(fileChunks[0])
+		} else {
+			for i, chunk := range fileChunks {
+				chunkEntryPath := filepath.Join(relPath, strconv.Itoa(i))
+				chunkBuilder := CreateDagLeafBuilder(chunkEntryPath)
 
-			chunkBuilder.SetType(ChunkLeafType)
-			chunkBuilder.SetData(chunk)
+				chunkBuilder.SetType(ChunkLeafType)
+				chunkBuilder.SetData(chunk)
 
-			// Chunks don't get custom metadata
-			chunkLeaf, err := chunkBuilder.BuildLeaf(nil)
-			if err != nil {
-				return nil, err
+				// Chunks don't get custom metadata
+				chunkLeaf, err := chunkBuilder.BuildLeaf(nil)
+				if err != nil {
+					return nil, err
+				}
+
+				label := dag.GetNextAvailableLabel()
+				builder.AddLink(label, chunkLeaf.Hash)
+				chunkLeaf.SetLabel(label)
+				dag.AddLeaf(chunkLeaf, nil)
 			}
-
-			label := dag.GetNextAvailableLabel()
-			builder.AddLink(label, chunkLeaf.Hash)
-			chunkLeaf.SetLabel(label)
-			dag.AddLeaf(chunkLeaf, nil)
 		}
 	}
 
@@ -971,5 +975,11 @@ func (d *Dag) ApplyTransmissionPacket(packet *TransmissionPacket) {
 				break
 			}
 		}
+	}
+}
+
+func (d *Dag) RemoveAllContent() {
+	for _, leaf := range d.Leafs {
+		leaf.Content = nil
 	}
 }
