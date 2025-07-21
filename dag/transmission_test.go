@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestLeafByLeafTransmission(t *testing.T) {
@@ -49,19 +50,23 @@ func TestLeafByLeafTransmission(t *testing.T) {
 			t.Fatalf("Failed to deserialize packet")
 		}
 
-		receiverDag.ApplyTransmissionPacket(packet)
-
-		err = receiverDag.Verify()
+		err = receiverDag.ApplyAndVerifyTransmissionPacket(packet)
 		if err != nil {
-			t.Fatalf("Verification failed after packet %d: %v", i, err)
+			t.Fatalf("Packet verification failed after packet %d: %v", i, err)
 		}
 
-		t.Logf("Successfully verified after packet %d, DAG now has %d leaves", i, len(receiverDag.Leafs))
+		t.Logf("Successfully verified packet %d, DAG now has %d leaves", i, len(receiverDag.Leafs))
 	}
 
 	if len(receiverDag.Leafs) != len(originalDag.Leafs) {
 		t.Fatalf("Receiver DAG has %d leaves, expected %d",
 			len(receiverDag.Leafs), len(originalDag.Leafs))
+	}
+
+	// Final full verification to ensure everything is correct
+	err = receiverDag.Verify()
+	if err != nil {
+		t.Fatalf("Final full DAG verification failed: %v", err)
 	}
 
 	for _, leaf := range receiverDag.Leafs {
@@ -74,6 +79,85 @@ func TestLeafByLeafTransmission(t *testing.T) {
 	}
 
 	t.Log("Successfully verified full DAG after discarding proofs")
+}
+
+func TestOptimizedLeafByLeafTransmission(t *testing.T) {
+	testDir, err := os.MkdirTemp("", "dag_optimized_transmission_test_*")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer os.RemoveAll(testDir)
+
+	GenerateDummyDirectory(filepath.Join(testDir, "input"), 5, 10, 3, 6)
+
+	t.Log("Directory Generated")
+
+	originalDag, err := CreateDag(filepath.Join(testDir, "input"), true)
+	if err != nil {
+		t.Fatalf("Failed to create DAG: %v", err)
+	}
+
+	t.Log("Dag Created")
+
+	err = originalDag.Verify()
+	if err != nil {
+		t.Fatalf("Original DAG verification failed: %v", err)
+	}
+
+	t.Log("Dag Verified")
+
+	sequence := originalDag.GetLeafSequence()
+
+	if len(sequence) == 0 {
+		t.Fatal("No transmission packets generated")
+	}
+
+	t.Logf("Generated %d transmission packets for optimized test", len(sequence))
+
+	receiverDag := &Dag{
+		Root:  originalDag.Root,
+		Leafs: make(map[string]*DagLeaf),
+	}
+
+	// Track performance by measuring time per packet
+	for i, p := range sequence {
+		start := time.Now()
+
+		bytes, err := p.ToCBOR()
+		if err != nil {
+			t.Fatalf("Failed to serialize packet")
+		}
+
+		packet, err := TransmissionPacketFromCBOR(bytes)
+		if err != nil {
+			t.Fatalf("Failed to deserialize packet")
+		}
+
+		// Use individual packet verification - this should be O(1) per packet
+		err = receiverDag.ApplyAndVerifyTransmissionPacket(packet)
+		if err != nil {
+			t.Fatalf("Optimized packet verification failed after packet %d: %v", i, err)
+		}
+
+		elapsed := time.Since(start)
+		t.Logf("Packet %d verified in %v, DAG now has %d leaves", i, elapsed, len(receiverDag.Leafs))
+	}
+
+	if len(receiverDag.Leafs) != len(originalDag.Leafs) {
+		t.Fatalf("Receiver DAG has %d leaves, expected %d",
+			len(receiverDag.Leafs), len(originalDag.Leafs))
+	}
+
+	// Only do final verification once at the end
+	finalStart := time.Now()
+	err = receiverDag.Verify()
+	finalElapsed := time.Since(finalStart)
+	if err != nil {
+		t.Fatalf("Final full DAG verification failed: %v", err)
+	}
+
+	t.Logf("Final full verification completed in %v", finalElapsed)
+	t.Log("Optimized transmission completed successfully")
 }
 
 func TestPartialDagTransmission(t *testing.T) {

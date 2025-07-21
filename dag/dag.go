@@ -222,11 +222,12 @@ func processFile(entry fs.DirEntry, fullPath string, path *string, dag *DagBuild
 	}
 
 	builder.SetType(FileLeafType)
-	fileChunks := chunkFile(fileData, ChunkSize)
 
 	if ChunkSize <= 0 {
 		builder.SetData(fileData)
 	} else {
+		fileChunks := chunkFile(fileData, ChunkSize)
+
 		if len(fileChunks) == 1 {
 			builder.SetData(fileChunks[0])
 		} else {
@@ -267,6 +268,10 @@ func processFile(entry fs.DirEntry, fullPath string, path *string, dag *DagBuild
 func chunkFile(fileData []byte, chunkSize int) [][]byte {
 	var chunks [][]byte
 	fileSize := len(fileData)
+
+	if chunkSize <= 0 {
+		return [][]byte{fileData}
+	}
 
 	for i := 0; i < fileSize; i += chunkSize {
 		end := i + chunkSize
@@ -953,6 +958,33 @@ func (d *Dag) GetLeafSequence() []*TransmissionPacket {
 	return sequence
 }
 
+// VerifyTransmissionPacket verifies a transmission packet independently
+func (d *Dag) VerifyTransmissionPacket(packet *TransmissionPacket) error {
+	if packet.ParentHash == "" {
+		if err := packet.Leaf.VerifyRootLeaf(); err != nil {
+			return fmt.Errorf("transmission packet root leaf verification failed: %w", err)
+		}
+	} else {
+		if err := packet.Leaf.VerifyLeaf(); err != nil {
+			return fmt.Errorf("transmission packet leaf verification failed: %w", err)
+		}
+
+		if parent, exists := d.Leafs[packet.ParentHash]; exists && parent.CurrentLinkCount > 1 {
+			proof, hasProof := packet.Proofs[packet.Leaf.Hash]
+			if !hasProof {
+				return fmt.Errorf("missing merkle proof for leaf %s in transmission packet", packet.Leaf.Hash)
+			}
+
+			if err := parent.VerifyBranch(proof); err != nil {
+				return fmt.Errorf("invalid merkle proof for leaf %s: %w", packet.Leaf.Hash, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// ApplyTransmissionPacket applies a transmission packet to the DAG
 func (d *Dag) ApplyTransmissionPacket(packet *TransmissionPacket) {
 	d.Leafs[packet.Leaf.Hash] = packet.Leaf
 
@@ -976,6 +1008,16 @@ func (d *Dag) ApplyTransmissionPacket(packet *TransmissionPacket) {
 			}
 		}
 	}
+}
+
+// ApplyAndVerifyTransmissionPacket verifies then applies a transmission packet
+func (d *Dag) ApplyAndVerifyTransmissionPacket(packet *TransmissionPacket) error {
+	if err := d.VerifyTransmissionPacket(packet); err != nil {
+		return err
+	}
+
+	d.ApplyTransmissionPacket(packet)
+	return nil
 }
 
 func (d *Dag) RemoveAllContent() {
