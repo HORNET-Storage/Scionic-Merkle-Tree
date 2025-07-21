@@ -78,24 +78,66 @@ Turn a folder and its files into a Scionic Merkle DAG-Tree, verify, then convert
 input := filepath.Join(tmpDir, "input")
 output := filepath.Join(tmpDir, "output")
 
+// Set chunk size for file processing (optional - defaults to 262144 bytes)
 SetChunkSize(4096)
 
+// Create DAG from directory with timestamp in root
 dag, err := CreateDag(input, true)
 if err != nil {
   fmt.Fatalf("Error: %s", err)
 }
 
-result, err := dag.Verify()
+// Verify the entire DAG structure
+err = dag.Verify()
 if err != nil {
   fmt.Fatalf("Error: %s", err)
 }
 
 fmt.Println("Dag verified successfully")
 
+// Recreate the directory structure from the DAG
 err = dag.CreateDirectory(output)
 if err != nil {
   fmt.Fatalf("Error: %s", err)
 }
+```
+
+### Advanced Example with Additional Data
+```go
+// Create DAG with custom additional data
+additionalData := map[string]string{
+  "author": "example",
+  "version": "1.0.0",
+}
+
+dag, err := CreateDagAdvanced("./my-directory", additionalData)
+if err != nil {
+  fmt.Fatalf("Error: %s", err)
+}
+
+// Serialize to JSON or CBOR
+jsonData, err := dag.ToJSON()
+if err != nil {
+  fmt.Fatalf("Error: %s", err)
+}
+
+// Deserialize from JSON
+restoredDag, err := FromJSON(jsonData)
+if err != nil {
+  fmt.Fatalf("Error: %s", err)
+}
+```
+
+### Chunking Configuration
+```go
+// Set custom chunk size
+SetChunkSize(1024 * 1024) // 1MB chunks
+
+// Disable chunking entirely (files processed as single chunks)
+DisableChunking()
+
+// Reset to default chunk size (262144 bytes)
+SetDefaultChunkSize()
 ```
 
 ## Types
@@ -192,26 +234,70 @@ AdditionalData does get included in the leaf hash so any content stored here is 
 Currently we only use this to store the timestamp in the root leaf which is an optional parameter when creating a dag from a directory or file but advanced users that build the trees themselves can utilize this feature to store anything they want.
 
 ## Functions
+
+### DAG Creation and Management
 ```go
+func CreateDag(path string, timestampRoot bool) (*Dag, error)
+func CreateDagAdvanced(path string, additionalData map[string]string) (*Dag, error)
+func CreateDagCustom(path string, rootAdditionalData map[string]string, processor LeafProcessor) (*Dag, error)
+
 func CreateDagBuilder() *DagBuilder
 func (b *DagBuilder) AddLeaf(leaf *DagLeaf, parentLeaf *DagLeaf) error
 func (b *DagBuilder) BuildDag(root string) *Dag
-func (b *DagBuilder) GetLatestLabel()
-func (b *DagBuilder) GetNextAvailableLabel()
+func (b *DagBuilder) GetLatestLabel() string
+func (b *DagBuilder) GetNextAvailableLabel() string
+```
 
-func CreateDag(path string, timestampRoot bool) (*Dag, error)
+### DAG Operations
+```go
 func (dag *Dag) Verify() error
 func (dag *Dag) CreateDirectory(path string) error
 func (dag *Dag) GetContentFromLeaf(leaf *DagLeaf) ([]byte, error)
 func (dag *Dag) IterateDag(processLeaf func(leaf *DagLeaf, parent *DagLeaf) error) error
+func (dag *Dag) GetPartial(start, end int) (*Dag, error)
+func ReadDag(path string) (*Dag, error)
+```
 
+### Transmission and Synchronization
+```go
+func (d *Dag) GetLeafSequence() []*TransmissionPacket
+func (d *Dag) VerifyTransmissionPacket(packet *TransmissionPacket) error
+func (d *Dag) ApplyTransmissionPacket(packet *TransmissionPacket)
+func (d *Dag) ApplyAndVerifyTransmissionPacket(packet *TransmissionPacket) error
+```
+
+### Serialization
+```go
+func (dag *Dag) ToCBOR() ([]byte, error)
+func (dag *Dag) ToJSON() ([]byte, error)
+func FromCBOR(data []byte) (*Dag, error)
+func FromJSON(data []byte) (*Dag, error)
+
+func (packet *TransmissionPacket) ToCBOR() ([]byte, error)
+func (packet *TransmissionPacket) ToJSON() ([]byte, error)
+func TransmissionPacketFromCBOR(data []byte) (*TransmissionPacket, error)
+func TransmissionPacketFromJSON(data []byte) (*TransmissionPacket, error)
+```
+
+### Chunk Size Configuration
+```go
+func SetChunkSize(size int)
+func DisableChunking()
+func SetDefaultChunkSize()
+```
+
+### Leaf Builder
+```go
 func CreateDagLeafBuilder(name string) *DagLeafBuilder
-func (b *DagLeafBuilder) SetType(leafType LeafType) 
+func (b *DagLeafBuilder) SetType(leafType LeafType)
 func (b *DagLeafBuilder) SetData(data []byte)
-func (b *DagLeafBuilder) AddLink(label string, hash string) 
-func (b *DagLeafBuilder) BuildLeaf(additionalData map[string]string) (*DagLeaf, error) 
+func (b *DagLeafBuilder) AddLink(label string, hash string)
+func (b *DagLeafBuilder) BuildLeaf(additionalData map[string]string) (*DagLeaf, error)
 func (b *DagLeafBuilder) BuildRootLeaf(dag *DagBuilder, additionalData map[string]string) (*DagLeaf, error)
+```
 
+### Leaf Operations
+```go
 func (leaf *DagLeaf) GetBranch(key string) (*ClassicTreeBranch, error)
 func (leaf *DagLeaf) VerifyBranch(branch *ClassicTreeBranch) error
 func (leaf *DagLeaf) VerifyLeaf() error
@@ -221,6 +307,97 @@ func (leaf *DagLeaf) HasLink(hash string) bool
 func (leaf *DagLeaf) AddLink(hash string)
 func (leaf *DagLeaf) Clone() *DagLeaf
 func (leaf *DagLeaf) SetLabel(label string)
+```
+
+### Testing Utilities
+```go
+func GenerateDummyDirectory(path string, minItems, maxItems, minDepth, maxDepth int)
+func FindRandomChild(leaf *DagLeaf, leafs map[string]*DagLeaf) *DagLeaf
+func CreateDummyLeaf(name string) (*DagLeaf, error)
+```
+
+## Advanced Features
+
+### Transmission Packets and LeafSync Protocol
+
+Scionic Merkle Trees support efficient synchronization through transmission packets. Each packet contains a leaf and its verification proofs, allowing for individual leaf verification without requiring the entire DAG:
+
+```go
+// Get all leaves as transmission packets
+packets := dag.GetLeafSequence()
+
+// Create a new DAG to receive transmitted leaves
+receiverDag := &Dag{
+  Leaves: make(map[string]*DagLeaf),
+  // ... other initialization
+}
+
+// Process each packet individually
+for _, packet := range packets {
+  // Verify the packet independently
+  err := receiverDag.VerifyTransmissionPacket(packet)
+  if err != nil {
+    fmt.Printf("Packet verification failed: %v\n", err)
+    continue
+  }
+
+  // Apply the verified packet to the receiver DAG
+  receiverDag.ApplyTransmissionPacket(packet)
+
+  // Or combine verification and application in one step
+  err = receiverDag.ApplyAndVerifyTransmissionPacket(packet)
+  if err != nil {
+    fmt.Printf("Failed to apply packet: %v\n", err)
+  }
+}
+```
+
+### Chunking Configuration
+
+The library provides flexible file chunking options:
+
+#### Default Chunking
+Files are automatically split into chunks of 262,144 bytes (256KB) by default:
+```go
+// Uses default chunk size
+dag, err := CreateDag("./directory", true)
+```
+
+#### Custom Chunk Size
+Set a specific chunk size for your use case:
+```go
+// Set 1MB chunk size
+SetChunkSize(1024 * 1024)
+dag, err := CreateDag("./directory", true)
+
+// Set 4KB chunk size for smaller files
+SetChunkSize(4096)
+dag, err := CreateDag("./directory", true)
+```
+
+#### Disable Chunking
+When chunking is disabled, entire files are processed as single chunks regardless of size:
+```go
+// Disable chunking - files stored as single chunks
+DisableChunking()
+dag, err := CreateDag("./directory", true)
+
+// This is equivalent to:
+SetChunkSize(-1)
+```
+
+**Use DisableChunking() when:**
+- Working with many small files where chunking overhead isn't beneficial
+- You want simpler DAG structures with fewer total leaves
+- Network transmission of individual files is more important than partial file access
+- You're building custom chunking logic at a higher level
+
+**Note:** Disabling chunking can result in very large leaves for big files, which may impact memory usage and network transmission efficiency for partial file access.
+
+#### Reset to Default
+```go
+// Reset back to default 262,144 byte chunks
+SetDefaultChunkSize()
 ```
 
 The trees are now in beta and the data structure of the trees will no longer change.
