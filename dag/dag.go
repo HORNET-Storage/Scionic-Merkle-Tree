@@ -455,11 +455,35 @@ func (dag *Dag) GetContentFromLeaf(leaf *DagLeaf) ([]byte, error) {
 	var content []byte
 
 	if len(leaf.Links) > 0 {
-		// For chunked files, concatenate content from all chunks
-		for _, link := range leaf.Links {
-			childLeaf := dag.Leafs[link]
+		// For chunked files, sort links by label and concatenate content from all chunks
+		var sortedLinks []struct {
+			Label int
+			Link  string
+		}
+
+		for label, link := range leaf.Links {
+			labelNum, err := strconv.Atoi(label)
+			if err != nil {
+				return nil, fmt.Errorf("invalid link label: %s", label)
+			}
+
+			sortedLinks = append(sortedLinks, struct {
+				Label int
+				Link  string
+			}{
+				Label: labelNum,
+				Link:  link,
+			})
+		}
+
+		sort.Slice(sortedLinks, func(i, j int) bool {
+			return sortedLinks[i].Label < sortedLinks[j].Label
+		})
+
+		for _, item := range sortedLinks {
+			childLeaf := dag.Leafs[item.Link]
 			if childLeaf == nil {
-				return nil, fmt.Errorf("invalid link: %s", link)
+				return nil, fmt.Errorf("invalid link: %s", item.Link)
 			}
 
 			content = append(content, childLeaf.Content...)
