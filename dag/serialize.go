@@ -36,6 +36,13 @@ type SerializableTransmissionPacket struct {
 	Proofs     map[string]*ClassicTreeBranch `json:"proofs,omitempty" cbor:"proofs,omitempty"`
 }
 
+// SerializableBatchedTransmissionPacket is a minimal version of BatchedTransmissionPacket for efficient serialization
+type SerializableBatchedTransmissionPacket struct {
+	Leaves        []*SerializableDagLeaf
+	Relationships map[string]string
+	Proofs        map[string]*ClassicTreeBranch `json:"proofs,omitempty" cbor:"proofs,omitempty"`
+}
+
 // ToSerializable converts a Dag to its serializable form
 func (dag *Dag) ToSerializable() *SerializableDag {
 	serializable := &SerializableDag{
@@ -288,4 +295,119 @@ func TransmissionPacketFromJSON(data []byte) (*TransmissionPacket, error) {
 		return nil, err
 	}
 	return TransmissionPacketFromSerializable(&serializable), nil
+}
+
+// ToSerializable converts a BatchedTransmissionPacket to its serializable form
+func (packet *BatchedTransmissionPacket) ToSerializable() *SerializableBatchedTransmissionPacket {
+	serializable := &SerializableBatchedTransmissionPacket{
+		Leaves:        make([]*SerializableDagLeaf, len(packet.Leaves)),
+		Relationships: make(map[string]string),
+		Proofs:        make(map[string]*ClassicTreeBranch),
+	}
+
+	for i, leaf := range packet.Leaves {
+		serializable.Leaves[i] = leaf.ToSerializable()
+	}
+
+	// Copy relationships
+	if packet.Relationships != nil {
+		for k, v := range packet.Relationships {
+			serializable.Relationships[k] = v
+		}
+	}
+
+	// Copy proofs
+	if packet.Proofs != nil {
+		for k, v := range packet.Proofs {
+			serializable.Proofs[k] = v
+		}
+	}
+
+	return serializable
+}
+
+// BatchedTransmissionPacketFromSerializable reconstructs a BatchedTransmissionPacket from its serializable form
+func BatchedTransmissionPacketFromSerializable(s *SerializableBatchedTransmissionPacket) *BatchedTransmissionPacket {
+	leaves := make([]*DagLeaf, len(s.Leaves))
+	for i, serializableLeaf := range s.Leaves {
+		leaves[i] = &DagLeaf{
+			Hash:              serializableLeaf.Hash,
+			ItemName:          serializableLeaf.ItemName,
+			Type:              serializableLeaf.Type,
+			ContentHash:       serializableLeaf.ContentHash,
+			Content:           serializableLeaf.Content,
+			ClassicMerkleRoot: serializableLeaf.ClassicMerkleRoot,
+			CurrentLinkCount:  serializableLeaf.CurrentLinkCount,
+			LatestLabel:       serializableLeaf.LatestLabel,
+			LeafCount:         serializableLeaf.LeafCount,
+			Links:             make(map[string]string),
+			AdditionalData:    make(map[string]string),
+			Proofs:            make(map[string]*ClassicTreeBranch),
+		}
+
+		// Copy and sort links
+		leaves[i].Links = sortMapByKeys(serializableLeaf.Links)
+
+		// Copy and sort additional data
+		leaves[i].AdditionalData = sortMapByKeys(serializableLeaf.AdditionalData)
+
+		// Copy stored proofs
+		if serializableLeaf.StoredProofs != nil {
+			for k, v := range serializableLeaf.StoredProofs {
+				leaves[i].Proofs[k] = v
+			}
+		}
+	}
+
+	packet := &BatchedTransmissionPacket{
+		Leaves:        leaves,
+		Relationships: make(map[string]string),
+		Proofs:        make(map[string]*ClassicTreeBranch),
+	}
+
+	// Copy relationships
+	if s.Relationships != nil {
+		for k, v := range s.Relationships {
+			packet.Relationships[k] = v
+		}
+	}
+
+	// Copy proofs
+	if s.Proofs != nil {
+		for k, v := range s.Proofs {
+			packet.Proofs[k] = v
+		}
+	}
+
+	return packet
+}
+
+// ToCBOR serializes a BatchedTransmissionPacket to CBOR format
+func (packet *BatchedTransmissionPacket) ToCBOR() ([]byte, error) {
+	serializable := packet.ToSerializable()
+	return cbor.Marshal(serializable)
+}
+
+// ToJSON serializes a BatchedTransmissionPacket to JSON format
+func (packet *BatchedTransmissionPacket) ToJSON() ([]byte, error) {
+	serializable := packet.ToSerializable()
+	return json.MarshalIndent(serializable, "", "  ")
+}
+
+// BatchedTransmissionPacketFromCBOR deserializes a BatchedTransmissionPacket from CBOR format
+func BatchedTransmissionPacketFromCBOR(data []byte) (*BatchedTransmissionPacket, error) {
+	var serializable SerializableBatchedTransmissionPacket
+	if err := cbor.Unmarshal(data, &serializable); err != nil {
+		return nil, err
+	}
+	return BatchedTransmissionPacketFromSerializable(&serializable), nil
+}
+
+// BatchedTransmissionPacketFromJSON deserializes a BatchedTransmissionPacket from JSON format
+func BatchedTransmissionPacketFromJSON(data []byte) (*BatchedTransmissionPacket, error) {
+	var serializable SerializableBatchedTransmissionPacket
+	if err := json.Unmarshal(data, &serializable); err != nil {
+		return nil, err
+	}
+	return BatchedTransmissionPacketFromSerializable(&serializable), nil
 }

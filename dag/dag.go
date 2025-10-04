@@ -392,11 +392,7 @@ func (d *Dag) verifyWithProofs() error {
 			// Only verify merkle proof if parent has multiple children
 			// according to its CurrentLinkCount (which is part of its hash)
 			if parent.CurrentLinkCount > 1 {
-				// Try both the full hash and the hash without label
-				var proof *ClassicTreeBranch
-				var hasProof bool
-
-				proof, hasProof = parent.Proofs[current.Hash]
+				proof, hasProof := parent.Proofs[current.Hash]
 
 				if !hasProof {
 					return fmt.Errorf("missing merkle proof for node %s in partial DAG", current.Hash)
@@ -567,16 +563,6 @@ func (d *Dag) pruneIrrelevantLinks(relevantHashes map[string]bool) {
 		// since they're part of the leaf's identity
 		leaf.Links = prunedLinks
 	}
-}
-
-// findParent searches the DAG for a leaf's parent
-func (d *Dag) findParent(leaf *DagLeaf) *DagLeaf {
-	for _, potential := range d.Leafs {
-		if potential.HasLink(leaf.Hash) {
-			return potential
-		}
-	}
-	return nil
 }
 
 // buildVerificationBranch creates a branch containing the leaf and its verification path
@@ -993,7 +979,7 @@ func (d *Dag) VerifyTransmissionPacket(packet *TransmissionPacket) error {
 			return fmt.Errorf("transmission packet leaf verification failed: %w", err)
 		}
 
-		if parent, exists := d.Leafs[packet.ParentHash]; exists && parent.CurrentLinkCount > 1 {
+		if parent, exists := d.Leafs[packet.ParentHash]; exists && len(parent.Links) > 1 {
 			proof, hasProof := packet.Proofs[packet.Leaf.Hash]
 			if !hasProof {
 				return fmt.Errorf("missing merkle proof for leaf %s in transmission packet", packet.Leaf.Hash)
@@ -1048,4 +1034,443 @@ func (d *Dag) RemoveAllContent() {
 	for _, leaf := range d.Leafs {
 		leaf.Content = nil
 	}
+}
+
+// GetBatchedLeafSequence returns an ordered sequence of batched transmission packets
+// Each batch contains multiple related leaves that share common branches for efficient transmission
+func (d *Dag) GetBatchedLeafSequence() []*BatchedTransmissionPacket {
+	if BatchSize <= 0 {
+		individualPackets := d.GetLeafSequence()
+		var batchedPackets []*BatchedTransmissionPacket
+		for _, packet := range individualPackets {
+			batchedPackets = append(batchedPackets, &BatchedTransmissionPacket{
+				Leaves:        []*DagLeaf{packet.Leaf},
+				Relationships: map[string]string{packet.Leaf.Hash: packet.ParentHash},
+				Proofs:        packet.Proofs,
+			})
+		}
+		return batchedPackets
+	}
+
+	var sequence []*BatchedTransmissionPacket
+	visited := make(map[string]bool)
+
+	rootLeaf := d.Leafs[d.Root]
+	if rootLeaf == nil {
+		return sequence
+	}
+
+	rootLeafClone := rootLeaf.Clone()
+	rootLeafClone.Links = make(map[string]string)
+
+	rootBatch := &BatchedTransmissionPacket{
+		Leaves:        []*DagLeaf{rootLeafClone},
+		Relationships: map[string]string{rootLeafClone.Hash: ""},
+		Proofs:        make(map[string]*ClassicTreeBranch),
+	}
+	sequence = append(sequence, rootBatch)
+	visited[d.Root] = true
+
+	queue := []string{d.Root}
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+
+		currentLeaf := d.Leafs[current]
+
+		var children []string
+		for _, link := range currentLeaf.Links {
+			if !visited[link] {
+				children = append(children, link)
+			}
+		}
+		sort.Strings(children)
+
+		d.batchChildren(children, current, &sequence, visited, &queue)
+	}
+
+	return sequence
+}
+
+// batchChildren groups children into batches based on size and shared branches
+func (d *Dag) batchChildren(children []string, parentHash string, sequence *[]*BatchedTransmissionPacket, visited map[string]bool, queue *[]string) {
+	if len(children) == 0 {
+		return
+	}
+
+	d.batchChildrenWithParentIncluded(children, parentHash, sequence, visited, queue)
+}
+
+// batchChildrenWithParentIncluded splits children across batches but includes parent in each batch
+// This allows incremental transmission while maintaining Merkle proof validity
+func (d *Dag) batchChildrenWithParentIncluded(children []string, parentHash string, sequence *[]*BatchedTransmissionPacket, visited map[string]bool, queue *[]string) {
+	parentLeaf := d.Leafs[parentHash]
+	if parentLeaf == nil {
+		return
+	}
+
+	currentBatch := &BatchedTransmissionPacket{
+		Leaves:        make([]*DagLeaf, 0),
+		Relationships: make(map[string]string),
+		Proofs:        make(map[string]*ClassicTreeBranch),
+	}
+
+	parentClone := parentLeaf.Clone()
+	parentClone.Links = make(map[string]string)
+	currentBatch.Leaves = append(currentBatch.Leaves, parentClone)
+
+	for _, childHash := range children {
+		childLeaf := d.Leafs[childHash]
+		if childLeaf == nil {
+			continue
+		}
+
+		leafClone := childLeaf.Clone()
+		leafClone.Links = make(map[string]string)
+
+		// Check if adding this leaf would exceed batch size limit
+		tempBatch := &BatchedTransmissionPacket{
+			Leaves:        append(currentBatch.Leaves, leafClone),
+			Relationships: make(map[string]string),
+			Proofs:        make(map[string]*ClassicTreeBranch),
+		}
+
+		// Copy existing relationships
+		for k, v := range currentBatch.Relationships {
+			tempBatch.Relationships[k] = v
+		}
+		tempBatch.Relationships[childHash] = parentHash
+
+		// Copy existing proofs
+		for k, v := range currentBatch.Proofs {
+			tempBatch.Proofs[k] = v
+		}
+
+		exceedsLimit := false
+		if BatchSize > 0 {
+			estimatedSize := d.estimateBatchSize(tempBatch)
+			safetyMargin := BatchSize / 5
+			effectiveLimit := BatchSize - safetyMargin
+			exceedsLimit = estimatedSize > effectiveLimit
+		}
+
+		if exceedsLimit {
+			// Current batch is full, add it to sequence and start a new batch
+			if len(currentBatch.Leaves) > 1 { // Only add if it has children beyond the parent
+				*sequence = append(*sequence, currentBatch)
+			}
+
+			// Start a new batch with just the parent
+			currentBatch = &BatchedTransmissionPacket{
+				Leaves:        []*DagLeaf{parentClone},
+				Relationships: make(map[string]string),
+				Proofs:        make(map[string]*ClassicTreeBranch),
+			}
+		}
+
+		// Add the child to current batch
+		currentBatch.Leaves = append(currentBatch.Leaves, leafClone)
+		currentBatch.Relationships[childHash] = parentHash
+
+		childCountInBatch := 0
+		for _, leaf := range currentBatch.Leaves[1:] {
+			if _, exists := currentBatch.Relationships[leaf.Hash]; exists {
+				childCountInBatch++
+			}
+		}
+
+		if childCountInBatch > 1 {
+			for leafHash := range currentBatch.Proofs {
+				if _, exists := currentBatch.Relationships[leafHash]; exists {
+					delete(currentBatch.Proofs, leafHash)
+				}
+			}
+
+			builder := merkle_tree.CreateTree()
+			childLabels := make([]string, 0)
+			childHashes := make([]string, 0)
+
+			type childInfo struct {
+				label string
+				hash  string
+			}
+			var children []childInfo
+
+			for _, leaf := range currentBatch.Leaves[1:] {
+				if _, exists := currentBatch.Relationships[leaf.Hash]; exists {
+					label := GetLabel(leaf.Hash)
+					if label != "" {
+						children = append(children, childInfo{label: label, hash: leaf.Hash})
+					}
+				}
+			}
+
+			sort.Slice(children, func(i, j int) bool {
+				return children[i].label < children[j].label
+			})
+
+			for _, child := range children {
+				builder.AddLeaf(child.label, child.hash)
+				childLabels = append(childLabels, child.label)
+				childHashes = append(childHashes, child.hash)
+			}
+
+			if len(childLabels) > 1 {
+				merkleTree, _, err := builder.Build()
+				if err == nil {
+					for i, childHash := range childHashes {
+						currentBatch.Proofs[childHash] = &ClassicTreeBranch{
+							Leaf:  childHash,
+							Proof: merkleTree.Proofs[i],
+						}
+					}
+				}
+			}
+		}
+
+		visited[childHash] = true
+		*queue = append(*queue, childHash)
+	}
+
+	if len(currentBatch.Leaves) > 0 {
+		*sequence = append(*sequence, currentBatch)
+	}
+}
+
+// estimateBatchSize provides a rough estimate of a batched transmission packet's serialized size in bytes
+func (d *Dag) estimateBatchSize(batch *BatchedTransmissionPacket) int {
+	size := 0
+
+	// Estimate leaves (more accurate estimation)
+	for _, leaf := range batch.Leaves {
+		// Base size for leaf structure
+		size += 200 // CBOR overhead for leaf structure
+
+		// Content fields
+		size += len(leaf.Hash)
+		size += len(leaf.ItemName)
+		size += len(leaf.Content)
+		size += len(leaf.ClassicMerkleRoot)
+
+		// Additional data (key-value pairs)
+		size += len(leaf.AdditionalData) * 100 // more generous estimate
+
+		// Fixed fields
+		size += 50 // for Type, CurrentLinkCount, etc.
+	}
+
+	// Estimate relationships (key + value strings with CBOR overhead)
+	for k, v := range batch.Relationships {
+		size += len(k) + len(v) + 20 // CBOR overhead
+	}
+
+	// Estimate proofs (each proof has significant overhead)
+	for _, proof := range batch.Proofs {
+		size += len(proof.Leaf) + 100 // proof structure overhead
+		if proof.Proof != nil {
+			size += len(proof.Proof.Siblings) * 35 // hash size + CBOR overhead
+			size += 50                             // proof metadata
+		}
+	}
+
+	// Add significant overhead for CBOR serialization structure
+	size += 200 // CBOR map/array overhead
+
+	return size
+}
+
+// VerifyBatchedTransmissionPacket verifies a batched transmission packet independently
+func (d *Dag) VerifyBatchedTransmissionPacket(packet *BatchedTransmissionPacket) error {
+	parentStates := make(map[string]*DagLeaf)
+
+	// Build temporary parent leaves with their links reconstructed from relationships
+	for childHash, parentHash := range packet.Relationships {
+		if parentHash == "" {
+			continue
+		}
+
+		if _, exists := parentStates[parentHash]; !exists {
+			// Find parent in batch or existing DAG
+			var parentLeaf *DagLeaf
+			if batchParent := packet.findLeafByHash(parentHash); batchParent != nil {
+				parentLeaf = batchParent.Clone()
+			} else if dagParent, exists := d.Leafs[parentHash]; exists {
+				parentLeaf = dagParent.Clone()
+			} else {
+				return fmt.Errorf("parent %s not found for leaf %s in batched transmission packet", parentHash, childHash)
+			}
+
+			// Reconstruct links for this parent based on relationships in the batch
+			parentLeaf.Links = make(map[string]string)
+			for cHash, pHash := range packet.Relationships {
+				if pHash == parentHash {
+					if childLeaf := packet.findLeafByHash(cHash); childLeaf != nil {
+						label := GetLabel(childLeaf.Hash)
+						if label != "" {
+							parentLeaf.Links[label] = childLeaf.Hash
+						}
+					}
+				}
+			}
+
+			// Rebuild Merkle tree if parent has multiple children
+			if len(parentLeaf.Links) > 1 {
+				builder := merkle_tree.CreateTree()
+				for label, hash := range parentLeaf.Links {
+					builder.AddLeaf(label, hash)
+				}
+				merkleTree, leafMap, err := builder.Build()
+				if err != nil {
+					return fmt.Errorf("failed to rebuild merkle tree for parent %s: %w", parentHash, err)
+				}
+				parentLeaf.MerkleTree = merkleTree
+				parentLeaf.LeafMap = leafMap
+				parentLeaf.ClassicMerkleRoot = merkleTree.Root
+			}
+
+			parentStates[parentHash] = parentLeaf
+		}
+	}
+
+	// Now verify each leaf
+	for childHash, parentHash := range packet.Relationships {
+		childLeaf := packet.findLeafByHash(childHash)
+		if childLeaf == nil {
+			continue
+		}
+
+		if parentHash == "" {
+			if err := childLeaf.VerifyRootLeaf(); err != nil {
+				return fmt.Errorf("batched transmission packet root leaf %s verification failed: %w", childHash, err)
+			}
+		} else {
+			if err := childLeaf.VerifyLeaf(); err != nil {
+				return fmt.Errorf("batched transmission packet leaf %s verification failed: %w", childHash, err)
+			}
+
+			// Get the parent state for verification
+			parentLeaf, exists := parentStates[parentHash]
+			if !exists {
+				return fmt.Errorf("parent state not available for leaf %s", childHash)
+			}
+
+			// If parent has multiple children in this batch, verify the merkle proof
+			if len(parentLeaf.Links) > 1 {
+				proof, hasProof := packet.Proofs[childHash]
+				if !hasProof {
+					return fmt.Errorf("missing merkle proof for leaf %s in batched transmission packet", childHash)
+				}
+
+				if err := parentLeaf.VerifyBranch(proof); err != nil {
+					return fmt.Errorf("invalid merkle proof for leaf %s: %w", childHash, err)
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// ApplyBatchedTransmissionPacket applies a batched transmission packet to the DAG
+func (d *Dag) ApplyBatchedTransmissionPacket(packet *BatchedTransmissionPacket) {
+	parentsToUpdate := make(map[string]bool)
+
+	for _, leaf := range packet.Leaves {
+		// Check if leaf already exists
+		if existingLeaf, exists := d.Leafs[leaf.Hash]; exists {
+			// Merge links from the new leaf into the existing one
+			if existingLeaf.Links == nil {
+				existingLeaf.Links = make(map[string]string)
+			}
+			for k, v := range leaf.Links {
+				existingLeaf.Links[k] = v
+			}
+			// Merge proofs from the new leaf into the existing one
+			if existingLeaf.Proofs == nil {
+				existingLeaf.Proofs = make(map[string]*ClassicTreeBranch)
+			}
+			for k, v := range leaf.Proofs {
+				existingLeaf.Proofs[k] = v
+			}
+			// Update other fields if needed (Merkle tree, etc.)
+			if leaf.MerkleTree != nil {
+				existingLeaf.MerkleTree = leaf.MerkleTree
+				existingLeaf.LeafMap = leaf.LeafMap
+				existingLeaf.ClassicMerkleRoot = leaf.ClassicMerkleRoot
+			}
+			// Don't overwrite the existing leaf, just update it
+		} else {
+			// Leaf doesn't exist, add it
+			d.Leafs[leaf.Hash] = leaf
+		}
+
+		// Update parent links
+		if parentHash, exists := packet.Relationships[leaf.Hash]; exists && parentHash != "" {
+			if parent, parentExists := d.Leafs[parentHash]; parentExists {
+				label := GetLabel(leaf.Hash)
+				if label != "" {
+					parent.Links[label] = leaf.Hash
+					parentsToUpdate[parentHash] = true
+				}
+			}
+		}
+	}
+
+	// Apply proofs to parent leaves
+	for childHash, proof := range packet.Proofs {
+		if parentHash, exists := packet.Relationships[childHash]; exists {
+			if parent := d.Leafs[parentHash]; parent != nil {
+				if parent.Proofs == nil {
+					parent.Proofs = make(map[string]*ClassicTreeBranch)
+				}
+				parent.Proofs[childHash] = proof
+			}
+		}
+	}
+}
+
+// ApplyAndVerifyBatchedTransmissionPacket verifies then applies a batched transmission packet
+func (d *Dag) ApplyAndVerifyBatchedTransmissionPacket(packet *BatchedTransmissionPacket) error {
+	if err := d.VerifyBatchedTransmissionPacket(packet); err != nil {
+		return err
+	}
+
+	d.ApplyBatchedTransmissionPacket(packet)
+	return nil
+}
+
+// findLeafByHash finds a leaf in the packet by its hash
+func (packet *BatchedTransmissionPacket) findLeafByHash(hash string) *DagLeaf {
+	for _, leaf := range packet.Leaves {
+		if leaf.Hash == hash {
+			return leaf
+		}
+	}
+	return nil
+}
+
+// GetRootLeaf returns the root leaf from the batch.
+func (packet *BatchedTransmissionPacket) GetRootLeaf() *DagLeaf {
+	if packet == nil || len(packet.Leaves) == 0 {
+		return nil
+	}
+
+	parentHashes := make(map[string]bool)
+	for _, parentHash := range packet.Relationships {
+		parentHashes[parentHash] = true
+	}
+
+	for _, leaf := range packet.Leaves {
+		if !parentHashes[leaf.Hash] {
+			return leaf
+		}
+	}
+
+	for _, leaf := range packet.Leaves {
+		if leaf.Type == DirectoryLeafType {
+			return leaf
+		}
+	}
+
+	return packet.Leaves[0]
 }

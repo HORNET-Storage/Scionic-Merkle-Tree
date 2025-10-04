@@ -101,6 +101,11 @@ func (b *DagLeafBuilder) BuildLeaf(additionalData map[string]string) (*DagLeaf, 
 		}
 
 		merkleRoot = merkleTree.Root
+	} else if len(b.Links) == 1 {
+		for _, link := range b.Links {
+			merkleRoot = []byte(GetHash(link))
+			break
+		}
 	}
 
 	additionalData = sortMapByKeys(additionalData)
@@ -184,6 +189,11 @@ func (b *DagLeafBuilder) BuildRootLeaf(dag *DagBuilder, additionalData map[strin
 		}
 
 		merkleRoot = merkleTree.Root
+	} else if len(b.Links) == 1 {
+		for _, link := range b.Links {
+			merkleRoot = []byte(GetHash(link))
+			break
+		}
 	}
 
 	latestLabel := dag.GetLatestLabel()
@@ -325,8 +335,9 @@ func (leaf *DagLeaf) VerifyBranch(branch *ClassicTreeBranch) error {
 func (leaf *DagLeaf) VerifyLeaf() error {
 	additionalData := sortMapByKeys(leaf.AdditionalData)
 
-	if leaf.ClassicMerkleRoot == nil || len(leaf.ClassicMerkleRoot) <= 0 {
-		leaf.ClassicMerkleRoot = []byte{}
+	merkleRoot := leaf.ClassicMerkleRoot
+	if len(leaf.ClassicMerkleRoot) <= 0 {
+		merkleRoot = []byte{}
 	}
 
 	leafData := struct {
@@ -339,7 +350,7 @@ func (leaf *DagLeaf) VerifyLeaf() error {
 	}{
 		ItemName:         leaf.ItemName,
 		Type:             leaf.Type,
-		MerkleRoot:       leaf.ClassicMerkleRoot,
+		MerkleRoot:       merkleRoot,
 		CurrentLinkCount: leaf.CurrentLinkCount,
 		ContentHash:      leaf.ContentHash,
 		AdditionalData:   sortMapForVerification(additionalData),

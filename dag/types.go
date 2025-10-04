@@ -79,6 +79,28 @@ type TransmissionPacket struct {
 	Proofs     map[string]*ClassicTreeBranch
 }
 
+type BatchedTransmissionPacket struct {
+	Leaves        []*DagLeaf
+	Relationships map[string]string
+	Proofs        map[string]*ClassicTreeBranch
+}
+
+const DefaultBatchSize = 4 * 1024 * 1024 // 4MB default batch size
+
+var BatchSize = DefaultBatchSize
+
+func SetBatchSize(size int) {
+	BatchSize = size
+}
+
+func DisableBatching() {
+	SetBatchSize(-1)
+}
+
+func SetDefaultBatchSize() {
+	SetBatchSize(DefaultBatchSize)
+}
+
 func SetChunkSize(size int) {
 	ChunkSize = size
 }
