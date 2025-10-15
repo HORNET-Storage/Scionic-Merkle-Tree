@@ -334,6 +334,12 @@ func (d *Dag) verifyFullDag() error {
 			if err != nil {
 				return err
 			}
+			// Verify root's children against merkle root if we have all children
+			if len(leaf.Links) == leaf.CurrentLinkCount && leaf.CurrentLinkCount > 0 {
+				if err := leaf.VerifyChildrenAgainstMerkleRoot(d); err != nil {
+					return fmt.Errorf("root leaf merkle root verification failed: %w", err)
+				}
+			}
 		} else {
 			err := leaf.VerifyLeaf()
 			if err != nil {
@@ -342,6 +348,13 @@ func (d *Dag) verifyFullDag() error {
 
 			if !parent.HasLink(leaf.Hash) {
 				return fmt.Errorf("parent %s does not contain link to child %s", parent.Hash, leaf.Hash)
+			}
+		}
+
+		// For non-root leaves, verify parent's merkle root if we have all of parent's children
+		if parent != nil && len(parent.Links) == parent.CurrentLinkCount && parent.CurrentLinkCount > 0 {
+			if err := parent.VerifyChildrenAgainstMerkleRoot(d); err != nil {
+				return fmt.Errorf("parent %s merkle root verification failed: %w", parent.Hash, err)
 			}
 		}
 
@@ -355,6 +368,13 @@ func (d *Dag) verifyWithProofs() error {
 	rootLeaf := d.Leafs[d.Root]
 	if err := rootLeaf.VerifyRootLeaf(); err != nil {
 		return fmt.Errorf("root leaf failed to verify: %w", err)
+	}
+
+	// If root has all children, verify merkle root
+	if len(rootLeaf.Links) == rootLeaf.CurrentLinkCount && rootLeaf.CurrentLinkCount > 0 {
+		if err := rootLeaf.VerifyChildrenAgainstMerkleRoot(d); err != nil {
+			return fmt.Errorf("root leaf merkle root verification failed: %w", err)
+		}
 	}
 
 	// Verify each non-root leaf
@@ -390,9 +410,16 @@ func (d *Dag) verifyWithProofs() error {
 				}
 			}
 
-			// Only verify merkle proof if parent has multiple children
-			// according to its CurrentLinkCount (which is part of its hash)
-			if parent.CurrentLinkCount > 1 {
+			// Check if we have all of parent's children
+			hasAllChildren := len(parent.Links) == parent.CurrentLinkCount
+
+			if hasAllChildren && parent.CurrentLinkCount > 0 {
+				// If we have all children, rebuild the merkle tree and verify
+				if err := parent.VerifyChildrenAgainstMerkleRoot(d); err != nil {
+					return fmt.Errorf("parent %s merkle root verification failed: %w", parent.Hash, err)
+				}
+			} else if parent.CurrentLinkCount > 1 {
+				// If we don't have all children, we must use stored proofs
 				proof, hasProof := parent.Proofs[current.Hash]
 
 				if !hasProof {

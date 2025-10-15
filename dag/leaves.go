@@ -1,6 +1,7 @@
 package dag
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"fmt"
 	"os"
@@ -338,6 +339,57 @@ func (leaf *DagLeaf) VerifyBranch(branch *ClassicTreeBranch) error {
 	err := merkletree.Verify(block, branch.Proof, leaf.ClassicMerkleRoot, nil)
 	if err != nil {
 		return err
+	}
+
+	return nil
+}
+
+// VerifyChildrenAgainstMerkleRoot verifies that the ClassicMerkleRoot matches the actual children
+// This should be called when we have all children present (len(Links) == CurrentLinkCount)
+func (leaf *DagLeaf) VerifyChildrenAgainstMerkleRoot(dag *Dag) error {
+	// Skip if no children
+	if leaf.CurrentLinkCount == 0 {
+		return nil
+	}
+
+	// Check if we have all children
+	if len(leaf.Links) != leaf.CurrentLinkCount {
+		return fmt.Errorf("cannot verify merkle root: have %d children but expected %d", len(leaf.Links), leaf.CurrentLinkCount)
+	}
+
+	// Case 1: Single child - ClassicMerkleRoot should be the child's hash
+	if leaf.CurrentLinkCount == 1 {
+		var childHash string
+		for _, link := range leaf.Links {
+			childHash = GetHash(link)
+			break
+		}
+
+		// ClassicMerkleRoot should be the hash bytes of the single child
+		expectedRoot := []byte(childHash)
+
+		// Compare the roots
+		if !bytes.Equal(leaf.ClassicMerkleRoot, expectedRoot) {
+			return fmt.Errorf("single child merkle root mismatch: expected %x, got %x", expectedRoot, leaf.ClassicMerkleRoot)
+		}
+		return nil
+	}
+
+	// Case 2: Multiple children - rebuild the merkle tree and compare roots
+	builder := merkle_tree.CreateTree()
+	for _, link := range leaf.Links {
+		hash := GetHash(link)
+		builder.AddLeaf(hash, hash)
+	}
+
+	merkleTree, _, err := builder.Build()
+	if err != nil {
+		return fmt.Errorf("failed to rebuild merkle tree for verification: %w", err)
+	}
+
+	// Compare the rebuilt root with the stored root
+	if !bytes.Equal(merkleTree.Root, leaf.ClassicMerkleRoot) {
+		return fmt.Errorf("merkle root mismatch: rebuilt root %x does not match stored root %x", merkleTree.Root, leaf.ClassicMerkleRoot)
 	}
 
 	return nil
