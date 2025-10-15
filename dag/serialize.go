@@ -117,7 +117,8 @@ func FromSerializable(s *SerializableDag) *Dag {
 			if len(leaf.Links) > 1 {
 				builder := merkle_tree.CreateTree()
 				for _, link := range leaf.Links {
-					builder.AddLeaf(GetLabel(link), link)
+					hash := GetHash(link)
+					builder.AddLeaf(hash, hash)
 				}
 
 				merkleTree, leafMap, err := builder.Build()

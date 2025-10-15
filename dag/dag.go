@@ -302,7 +302,8 @@ func (b *DagBuilder) AddLeaf(leaf *DagLeaf, parentLeaf *DagLeaf) error {
 		if len(parentLeaf.Links) > 1 {
 			builder := merkle_tree.CreateTree()
 			for _, link := range parentLeaf.Links {
-				builder.AddLeaf(GetLabel(link), link)
+				hash := GetHash(link)
+				builder.AddLeaf(hash, hash)
 			}
 
 			merkleTree, leafMap, err := builder.Build()
@@ -599,22 +600,23 @@ func (d *Dag) buildVerificationBranch(leaf *DagLeaf) (*DagBranch, error) {
 		// If parent has multiple children according to CurrentLinkCount,
 		// we must generate and store a proof since this is our only chance
 		if parent.CurrentLinkCount > 1 {
-			// Find the label for current in parent's links
-			var label string
-			for l, h := range parent.Links {
+			// Find the hash for current in parent's links
+			var childHash string
+			for _, h := range parent.Links {
 				if h == current.Hash {
-					label = l
+					childHash = GetHash(h)
 					break
 				}
 			}
-			if label == "" {
-				return nil, fmt.Errorf("unable to find label for key")
+			if childHash == "" {
+				return nil, fmt.Errorf("unable to find child hash for key")
 			}
 
 			// Build merkle tree with all current links
 			builder := merkle_tree.CreateTree()
-			for l, h := range parent.Links {
-				builder.AddLeaf(l, h)
+			for _, h := range parent.Links {
+				hash := GetHash(h)
+				builder.AddLeaf(hash, hash)
 			}
 			merkleTree, _, err := builder.Build()
 			if err != nil {
@@ -622,9 +624,9 @@ func (d *Dag) buildVerificationBranch(leaf *DagLeaf) (*DagBranch, error) {
 			}
 
 			// Get proof for the current leaf
-			index, exists := merkleTree.GetIndexForKey(label)
+			index, exists := merkleTree.GetIndexForKey(childHash)
 			if !exists {
-				return nil, fmt.Errorf("unable to find index for key %s", label)
+				return nil, fmt.Errorf("unable to find index for key %s", childHash)
 			}
 
 			// Store proof in parent clone
@@ -1187,41 +1189,37 @@ func (d *Dag) batchChildrenWithParentIncluded(children []string, parentHash stri
 			}
 
 			builder := merkle_tree.CreateTree()
-			childLabels := make([]string, 0)
-			childHashes := make([]string, 0)
 
 			type childInfo struct {
-				label string
-				hash  string
+				hash     string
+				hashOnly string
 			}
 			var children []childInfo
 
 			for _, leaf := range currentBatch.Leaves[1:] {
 				if _, exists := currentBatch.Relationships[leaf.Hash]; exists {
-					label := GetLabel(leaf.Hash)
-					if label != "" {
-						children = append(children, childInfo{label: label, hash: leaf.Hash})
+					hashOnly := GetHash(leaf.Hash)
+					if hashOnly != "" {
+						children = append(children, childInfo{hash: leaf.Hash, hashOnly: hashOnly})
 					}
 				}
 			}
 
-			sort.Slice(children, func(i, j int) bool {
-				return children[i].label < children[j].label
-			})
-
 			for _, child := range children {
-				builder.AddLeaf(child.label, child.hash)
-				childLabels = append(childLabels, child.label)
-				childHashes = append(childHashes, child.hash)
+				builder.AddLeaf(child.hashOnly, child.hashOnly)
 			}
 
-			if len(childLabels) > 1 {
+			if len(children) > 1 {
 				merkleTree, _, err := builder.Build()
 				if err == nil {
-					for i, childHash := range childHashes {
-						currentBatch.Proofs[childHash] = &ClassicTreeBranch{
-							Leaf:  childHash,
-							Proof: merkleTree.Proofs[i],
+					// Get proofs by looking up the correct index for each child's hash
+					for _, child := range children {
+						index, exists := merkleTree.GetIndexForKey(child.hashOnly)
+						if exists {
+							currentBatch.Proofs[child.hash] = &ClassicTreeBranch{
+								Leaf:  child.hash,
+								Proof: merkleTree.Proofs[index],
+							}
 						}
 					}
 				}
@@ -1316,8 +1314,9 @@ func (d *Dag) VerifyBatchedTransmissionPacket(packet *BatchedTransmissionPacket)
 			// Rebuild Merkle tree if parent has multiple children
 			if len(parentLeaf.Links) > 1 {
 				builder := merkle_tree.CreateTree()
-				for label, hash := range parentLeaf.Links {
-					builder.AddLeaf(label, hash)
+				for _, hash := range parentLeaf.Links {
+					hashOnly := GetHash(hash)
+					builder.AddLeaf(hashOnly, hashOnly)
 				}
 				merkleTree, leafMap, err := builder.Build()
 				if err != nil {

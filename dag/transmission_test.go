@@ -708,20 +708,21 @@ func TestDirectMerkleProofValidation(t *testing.T) {
 	var sortedChildren []childInfo
 
 	for _, child := range childLeaves {
-		label := GetLabel(child.Hash)
-		if label != "" {
-			sortedChildren = append(sortedChildren, childInfo{label: label, hash: child.Hash})
+		hash := GetHash(child.Hash)
+		if hash != "" {
+			sortedChildren = append(sortedChildren, childInfo{label: hash, hash: child.Hash})
 		}
 	}
 
+	// Sort by hash for deterministic ordering
 	sort.Slice(sortedChildren, func(i, j int) bool {
 		return sortedChildren[i].label < sortedChildren[j].label
 	})
 
 	for _, child := range sortedChildren {
-		builder.AddLeaf(child.label, child.hash)
+		builder.AddLeaf(child.label, child.label)
 		childOrder = append(childOrder, child.hash)
-		t.Logf("Adding child %s with label %s", child.hash, child.label)
+		t.Logf("Adding child %s with hash %s", child.hash, child.label)
 	}
 
 	expectedTree, _, err := builder.Build()
@@ -743,7 +744,8 @@ func TestDirectMerkleProofValidation(t *testing.T) {
 		t.Logf("Validating proof for child %s (index %d)", GetLabel(childHash), i)
 
 		// Direct proof validation: verify the proof proves inclusion of childHash in expectedTree
-		block := merkle_tree.CreateLeaf(childHash)
+		hash := GetHash(childHash)
+		block := merkle_tree.CreateLeaf(hash)
 		err := merkletree.Verify(block, proof.Proof, expectedTree.Root, nil)
 		if err != nil {
 			t.Errorf("CRYPTOGRAPHIC PROOF VALIDATION FAILED: proof for child %s is invalid: %v", childHash, err)

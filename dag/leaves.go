@@ -91,7 +91,8 @@ func (b *DagLeafBuilder) BuildLeaf(additionalData map[string]string) (*DagLeaf, 
 	if len(b.Links) > 1 {
 		builder := merkle_tree.CreateTree()
 		for _, link := range b.Links {
-			builder.AddLeaf(GetLabel(link), link)
+			hash := GetHash(link)
+			builder.AddLeaf(hash, hash)
 		}
 
 		var err error
@@ -179,7 +180,8 @@ func (b *DagLeafBuilder) BuildRootLeaf(dag *DagBuilder, additionalData map[strin
 	if len(b.Links) > 1 {
 		builder := merkle_tree.CreateTree()
 		for _, link := range b.Links {
-			builder.AddLeaf(GetLabel(link), link)
+			hash := GetHash(link)
+			builder.AddLeaf(hash, hash)
 		}
 
 		var err error
@@ -277,38 +279,46 @@ func (leaf *DagLeaf) GetBranch(key string) (*ClassicTreeBranch, error) {
 			return nil, fmt.Errorf("merkle tree not built for leaf")
 		}
 
-		// Find the label that maps to this hash
-		var label string
-		targetHash := key
+		// Find the hash that corresponds to this key
+		var targetHash string
+		var lookupHash string
 
 		// First try using the key directly as a label
 		if _, exists := leaf.Links[key]; exists {
-			label = key
 			targetHash = leaf.Links[key]
+			lookupHash = GetHash(targetHash)
 		} else if HasLabel(key) {
 			// If the key has a label, try finding it in the links
-			label = GetLabel(key)
+			label := GetLabel(key)
 			if h, exists := leaf.Links[label]; exists {
 				targetHash = h
+				lookupHash = GetHash(targetHash)
+			} else {
+				// Otherwise, extract the hash from the key
+				lookupHash = GetHash(key)
+				targetHash = key
 			}
 		} else {
-			// If the key is a hash, find its label
-			for l, h := range leaf.Links {
+			// If the key is a hash, use it directly
+			lookupHash = GetHash(key)
+			targetHash = key
+			// Try to find the full labeled version in links
+			for _, h := range leaf.Links {
 				if h == key || GetHash(h) == key {
-					label = l
 					targetHash = h
+					lookupHash = GetHash(h)
 					break
 				}
 			}
 		}
 
-		if label == "" {
-			return nil, fmt.Errorf("unable to find label for key %s", key)
+		if lookupHash == "" {
+			return nil, fmt.Errorf("unable to find hash for key %s", key)
 		}
 
-		index, exists := leaf.MerkleTree.GetIndexForKey(label)
+		index, exists := leaf.MerkleTree.GetIndexForKey(lookupHash)
 		if !exists {
-			return nil, fmt.Errorf("unable to find index for key %s", label)
+			return nil, fmt.Errorf("unable to find index for hash %s", lookupHash)
 		}
 
 		branch := &ClassicTreeBranch{
@@ -322,7 +332,8 @@ func (leaf *DagLeaf) GetBranch(key string) (*ClassicTreeBranch, error) {
 }
 
 func (leaf *DagLeaf) VerifyBranch(branch *ClassicTreeBranch) error {
-	block := merkle_tree.CreateLeaf(branch.Leaf)
+	hash := GetHash(branch.Leaf)
+	block := merkle_tree.CreateLeaf(hash)
 
 	err := merkletree.Verify(block, branch.Proof, leaf.ClassicMerkleRoot, nil)
 	if err != nil {
