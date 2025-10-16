@@ -148,3 +148,42 @@ func DisableChunking() {
 func SetDefaultChunkSize() {
 	SetChunkSize(DefaultChunkSize)
 }
+
+// DiffType represents the type of difference between two DAG leaves
+type DiffType string
+
+const (
+	// DiffTypeAdded indicates the leaf exists in the new DAG but not in the old DAG
+	DiffTypeAdded DiffType = "added"
+
+	// DiffTypeRemoved indicates the leaf exists in the old DAG but not in the new DAG
+	DiffTypeRemoved DiffType = "removed"
+)
+
+// LeafDiff represents a difference between two DAGs
+type LeafDiff struct {
+	// Type indicates whether this leaf was added or removed
+	Type DiffType `json:"type"`
+
+	// BareHash is the hash without the label prefix
+	BareHash string `json:"bare_hash"`
+
+	// Leaf is the leaf from the DAG (from old DAG if removed, from new DAG if added)
+	Leaf *DagLeaf `json:"leaf"`
+}
+
+// DagDiff represents the complete set of differences between two DAGs
+type DagDiff struct {
+	// Diffs maps bare hash to the difference for that leaf
+	Diffs map[string]*LeafDiff `json:"diffs"`
+
+	// Summary provides counts of each diff type
+	Summary DiffSummary `json:"summary"`
+}
+
+// DiffSummary provides statistics about the differences
+type DiffSummary struct {
+	Added   int `json:"added"`
+	Removed int `json:"removed"`
+	Total   int `json:"total"`
+}

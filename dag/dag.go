@@ -1638,3 +1638,344 @@ func (d *Dag) RecomputeLabels() error {
 
 	return nil
 }
+
+// Diff compares this DAG with another DAG and returns all differences.
+func (d *Dag) Diff(other *Dag) (*DagDiff, error) {
+	if d == nil {
+		return nil, fmt.Errorf("cannot diff: source DAG is nil")
+	}
+	if other == nil {
+		return nil, fmt.Errorf("cannot diff: target DAG is nil")
+	}
+
+	diff := &DagDiff{
+		Diffs: make(map[string]*LeafDiff),
+		Summary: DiffSummary{
+			Added:   0,
+			Removed: 0,
+			Total:   0,
+		},
+	}
+
+	// Create maps of bare hash -> leaf for both DAGs
+	oldLeafs := make(map[string]*DagLeaf)
+	for hash, leaf := range d.Leafs {
+		bareHash := StripLabel(hash)
+		oldLeafs[bareHash] = leaf
+	}
+
+	newLeafs := make(map[string]*DagLeaf)
+	for hash, leaf := range other.Leafs {
+		bareHash := StripLabel(hash)
+		newLeafs[bareHash] = leaf
+	}
+
+	// Find added leaves
+	for bareHash, newLeaf := range newLeafs {
+		if _, existsInOld := oldLeafs[bareHash]; !existsInOld {
+			// Leaf was added
+			diff.Diffs[bareHash] = &LeafDiff{
+				Type:     DiffTypeAdded,
+				BareHash: bareHash,
+				Leaf:     newLeaf,
+			}
+			diff.Summary.Added++
+			diff.Summary.Total++
+		}
+	}
+
+	// Find removed leaves
+	for bareHash, oldLeaf := range oldLeafs {
+		if _, existsInNew := newLeafs[bareHash]; !existsInNew {
+			// Leaf was removed
+			diff.Diffs[bareHash] = &LeafDiff{
+				Type:     DiffTypeRemoved,
+				BareHash: bareHash,
+				Leaf:     oldLeaf,
+			}
+			diff.Summary.Removed++
+			diff.Summary.Total++
+		}
+	}
+
+	return diff, nil
+}
+
+// DiffFromNewLeaves creates a DagDiff by comparing an old DAG with a set of new leaves.
+func (d *Dag) DiffFromNewLeaves(newLeaves map[string]*DagLeaf) (*DagDiff, error) {
+	if d == nil {
+		return nil, fmt.Errorf("cannot diff: source DAG is nil")
+	}
+	if newLeaves == nil {
+		return nil, fmt.Errorf("cannot diff: new leaves map is nil")
+	}
+
+	diff := &DagDiff{
+		Diffs: make(map[string]*LeafDiff),
+		Summary: DiffSummary{
+			Added:   0,
+			Removed: 0,
+			Total:   0,
+		},
+	}
+
+	// Create map of bare hash -> leaf for old DAG
+	oldLeafs := make(map[string]*DagLeaf)
+	for hash, leaf := range d.Leafs {
+		bareHash := StripLabel(hash)
+		oldLeafs[bareHash] = leaf
+	}
+
+	// Create map of bare hash -> leaf for new leaves
+	newLeafsMap := make(map[string]*DagLeaf)
+	for hash, leaf := range newLeaves {
+		bareHash := StripLabel(hash)
+		newLeafsMap[bareHash] = leaf
+	}
+
+	// Find added leaves (in new but not in old)
+	for bareHash, newLeaf := range newLeafsMap {
+		if _, existsInOld := oldLeafs[bareHash]; !existsInOld {
+			diff.Diffs[bareHash] = &LeafDiff{
+				Type:     DiffTypeAdded,
+				BareHash: bareHash,
+				Leaf:     newLeaf,
+			}
+			diff.Summary.Added++
+			diff.Summary.Total++
+		}
+	}
+
+	// Find removed leaves (in old but not in new)
+	for bareHash, oldLeaf := range oldLeafs {
+		if _, existsInNew := newLeafsMap[bareHash]; !existsInNew {
+			diff.Diffs[bareHash] = &LeafDiff{
+				Type:     DiffTypeRemoved,
+				BareHash: bareHash,
+				Leaf:     oldLeaf,
+			}
+			diff.Summary.Removed++
+			diff.Summary.Total++
+		}
+	}
+
+	return diff, nil
+}
+
+// GetAddedLeaves returns a map of all added leaves from the diff.
+func (diff *DagDiff) GetAddedLeaves() map[string]*DagLeaf {
+	addedLeaves := make(map[string]*DagLeaf)
+
+	for bareHash, leafDiff := range diff.Diffs {
+		if leafDiff.Type == DiffTypeAdded {
+			addedLeaves[bareHash] = leafDiff.Leaf
+		}
+	}
+
+	return addedLeaves
+}
+
+// GetRemovedLeaves returns a map of all removed leaves from the diff.
+func (diff *DagDiff) GetRemovedLeaves() map[string]*DagLeaf {
+	removedLeaves := make(map[string]*DagLeaf)
+
+	for bareHash, leafDiff := range diff.Diffs {
+		if leafDiff.Type == DiffTypeRemoved {
+			removedLeaves[bareHash] = leafDiff.Leaf
+		}
+	}
+
+	return removedLeaves
+}
+
+// ApplyToDAG applies the diff to a DAG, creating a new DAG with the changes.
+// This works by:
+// 1. Creating a pool of all available leaves (old leaves + new leaves from diff)
+// 2. Finding the new root (which will be one of the added leaves)
+// 3. Traversing from the new root to collect only referenced leaves
+// 4. Recomputing labels for consistency
+//
+// Leaves from the old DAG that aren't referenced by the new root are naturally excluded.
+func (diff *DagDiff) ApplyToDAG(oldDag *Dag) (*Dag, error) {
+	if oldDag == nil {
+		return nil, fmt.Errorf("cannot apply diff: old DAG is nil")
+	}
+	if diff == nil {
+		return nil, fmt.Errorf("cannot apply diff: diff is nil")
+	}
+
+	// If no additions, the DAG structure hasn't changed
+	if diff.Summary.Added == 0 {
+		// Return a copy of the old DAG
+		newDag := &Dag{
+			Root:  oldDag.Root,
+			Leafs: make(map[string]*DagLeaf),
+		}
+		for hash, leaf := range oldDag.Leafs {
+			newDag.Leafs[hash] = leaf
+		}
+		return newDag, nil
+	}
+
+	// Build a complete pool of available leaves using bare hashes as keys
+	leafPool := make(map[string]*DagLeaf)
+
+	// Add all leaves from old DAG
+	for hash, leaf := range oldDag.Leafs {
+		bareHash := StripLabel(hash)
+		leafPool[bareHash] = leaf
+	}
+
+	// Add all new leaves from diff (these will override if same bare hash exists)
+	for bareHash, leafDiff := range diff.Diffs {
+		if leafDiff.Type == DiffTypeAdded {
+			leafPool[bareHash] = leafDiff.Leaf
+		}
+	}
+
+	// Find the new root - it must be one of the added leaves
+	// The root is the leaf that's not referenced by any other leaf
+	addedLeaves := diff.GetAddedLeaves()
+
+	// Build a set of all child hashes referenced by ALL leaves in the pool
+	childHashes := make(map[string]bool)
+	for _, leaf := range leafPool {
+		for _, childHash := range leaf.Links {
+			bareChildHash := StripLabel(childHash)
+			childHashes[bareChildHash] = true
+		}
+	}
+
+	// Find the new root among added leaves (not referenced by any leaf)
+	var newRootHash string
+	for bareHash, leaf := range addedLeaves {
+		if !childHashes[bareHash] {
+			// verify it has root characteristics
+			if leaf.Type == DirectoryLeafType || leaf.LeafCount > 0 || leaf.LatestLabel != "" {
+				newRootHash = bareHash
+				break
+			}
+		}
+	}
+
+	if newRootHash == "" {
+		return nil, fmt.Errorf("cannot find new root among added leaves")
+	}
+
+	// Now traverse from the new root to collect all referenced leaves
+	newDagLeaves := make(map[string]*DagLeaf)
+	visited := make(map[string]bool)
+
+	var traverse func(bareHash string) error
+	traverse = func(bareHash string) error {
+		if visited[bareHash] {
+			return nil
+		}
+		visited[bareHash] = true
+
+		leaf, exists := leafPool[bareHash]
+		if !exists {
+			return fmt.Errorf("missing leaf in pool: %s", bareHash)
+		}
+
+		// Add this leaf to the new DAG
+		newDagLeaves[bareHash] = leaf
+
+		// Traverse all children
+		for _, childHash := range leaf.Links {
+			bareChildHash := StripLabel(childHash)
+			if err := traverse(bareChildHash); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	}
+
+	// Start traversal from new root
+	if err := traverse(newRootHash); err != nil {
+		return nil, fmt.Errorf("failed to traverse from new root: %w", err)
+	}
+
+	// Create the new DAG
+	newDag := &Dag{
+		Root:  newRootHash,
+		Leafs: newDagLeaves,
+	}
+
+	// Recompute labels to ensure consistency
+	if err := newDag.RecomputeLabels(); err != nil {
+		return nil, fmt.Errorf("failed to recompute labels: %w", err)
+	}
+
+	return newDag, nil
+}
+
+// CreatePartialDAGFromAdded creates a partial DAG containing only the added leaves.
+func (diff *DagDiff) CreatePartialDag() (*Dag, error) {
+	if diff == nil {
+		return nil, fmt.Errorf("cannot create partial DAG: diff is nil")
+	}
+
+	addedLeaves := diff.GetAddedLeaves()
+	if len(addedLeaves) == 0 {
+		return nil, fmt.Errorf("no added leaves to create partial DAG")
+	}
+
+	// Create DAG with added leaves
+	partialDag := &Dag{
+		Leafs: make(map[string]*DagLeaf),
+	}
+
+	// Add all leaves using bare hash as key initially
+	for bareHash, leaf := range addedLeaves {
+		partialDag.Leafs[bareHash] = leaf
+	}
+
+	// Find the root among added leaves (leaf not referenced by other added leaves)
+	childHashes := make(map[string]bool)
+	for _, leaf := range addedLeaves {
+		for _, childHash := range leaf.Links {
+			bareChildHash := StripLabel(childHash)
+			// Only count if the child is also in our added leaves
+			if _, exists := addedLeaves[bareChildHash]; exists {
+				childHashes[bareChildHash] = true
+			}
+		}
+	}
+
+	// Find the root (not a child of any added leaf)
+	var rootBareHash string
+	for bareHash := range addedLeaves {
+		if !childHashes[bareHash] {
+			rootBareHash = bareHash
+			break
+		}
+	}
+
+	if rootBareHash == "" {
+		// If all leaves reference each other, pick the directory leaf or first one
+		for bareHash, leaf := range addedLeaves {
+			if leaf.Type == DirectoryLeafType {
+				rootBareHash = bareHash
+				break
+			}
+		}
+		if rootBareHash == "" {
+			// Just pick the first one
+			for bareHash := range addedLeaves {
+				rootBareHash = bareHash
+				break
+			}
+		}
+	}
+
+	partialDag.Root = rootBareHash
+
+	// Recompute labels for consistency
+	if err := partialDag.RecomputeLabels(); err != nil {
+		return nil, fmt.Errorf("failed to recompute labels: %w", err)
+	}
+
+	return partialDag, nil
+}
