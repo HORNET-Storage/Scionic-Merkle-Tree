@@ -827,6 +827,24 @@ func GetLabel(hash string) string {
 	return parts[0]
 }
 
+// StripLabel removes the "label:" prefix from a hash string
+func StripLabel(hash string) string {
+	parts := strings.Split(hash, ":")
+	if len(parts) != 2 {
+		return hash
+	}
+	return parts[1]
+}
+
+// ReplaceLabelInLink replaces the label in a child's link hash
+func (leaf *DagLeaf) ReplaceLabelInLink(childHash string, newLabel string) string {
+	// Strip the existing label (if any) to get just the hash
+	bareHash := StripLabel(childHash)
+
+	// Return the hash with the new label
+	return newLabel + ":" + bareHash
+}
+
 func sortMapByKeys(inputMap map[string]string) map[string]string {
 	if inputMap == nil {
 		return map[string]string{}

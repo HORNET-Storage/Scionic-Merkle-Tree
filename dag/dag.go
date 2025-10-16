@@ -1500,3 +1500,141 @@ func (packet *BatchedTransmissionPacket) GetRootLeaf() *DagLeaf {
 
 	return packet.Leaves[0]
 }
+
+// RecomputeLabels reassigns all labels in the DAG in optimal traversal order.
+func (d *Dag) RecomputeLabels() error {
+	if d.Root == "" {
+		return fmt.Errorf("cannot recompute labels: DAG has no root")
+	}
+
+	if _, exists := d.Leafs[d.Root]; !exists {
+		return fmt.Errorf("cannot recompute labels: root leaf not found")
+	}
+
+	// Track bare hash -> new label mapping
+	labelMapping := make(map[string]string)
+
+	// The root never gets a label
+	rootBareHash := StripLabel(d.Root)
+	labelMapping[rootBareHash] = "" // Empty label for root
+
+	// Breadth-first traversal
+	currentLabel := 1
+	queue := []string{rootBareHash}
+	visited := make(map[string]bool)
+	visited[rootBareHash] = true
+
+	for len(queue) > 0 {
+		currentBareHash := queue[0]
+		queue = queue[1:]
+
+		// Find the leaf with this bare hash
+		var currentLeaf *DagLeaf
+		for hash, leaf := range d.Leafs {
+			if StripLabel(hash) == currentBareHash {
+				currentLeaf = leaf
+				break
+			}
+		}
+
+		if currentLeaf == nil {
+			continue
+		}
+
+		// Process all children of this leaf
+		childHashes := make([]string, 0, len(currentLeaf.Links))
+		for _, childHashWithLabel := range currentLeaf.Links {
+			childBareHash := StripLabel(childHashWithLabel)
+			childHashes = append(childHashes, childBareHash)
+		}
+		sort.Strings(childHashes)
+
+		for _, childBareHash := range childHashes {
+
+			// Skip if already visited
+			if visited[childBareHash] {
+				continue
+			}
+			visited[childBareHash] = true
+
+			// Assign new label
+			newLabel := strconv.Itoa(currentLabel)
+			currentLabel++
+
+			labelMapping[childBareHash] = newLabel
+
+			// Add to queue for processing
+			queue = append(queue, childBareHash)
+		}
+	}
+
+	newLeafs := make(map[string]*DagLeaf)
+
+	for oldHash, leaf := range d.Leafs {
+		bareHash := StripLabel(oldHash)
+
+		// Get the new label for this leaf
+		newLabel, exists := labelMapping[bareHash]
+		if !exists {
+			// This leaf wasn't visited (shouldn't happen in a valid DAG)
+			continue
+		}
+
+		// Construct new hash
+		var newHash string
+		if newLabel == "" {
+			// Root leaf - no label
+			newHash = bareHash
+		} else {
+			newHash = newLabel + ":" + bareHash
+		}
+
+		// Update the leaf's Hash field
+		leaf.Hash = newHash
+
+		// Update all the links to children with new labels
+		if len(leaf.Links) > 0 {
+			newLinks := make(map[string]string)
+			for _, childHashWithOldLabel := range leaf.Links {
+				childBareHash := StripLabel(childHashWithOldLabel)
+
+				// Get the new label for this child
+				childNewLabel, exists := labelMapping[childBareHash]
+				if !exists {
+					// Child wasn't visited (shouldn't happen)
+					continue
+				}
+
+				// Construct new child hash
+				var newChildHash string
+				if childNewLabel == "" {
+					// Root as child (shouldn't happen normally)
+					newChildHash = childBareHash
+				} else {
+					newChildHash = childNewLabel + ":" + childBareHash
+				}
+
+				// Add link with new label as key
+				newLinks[childNewLabel] = newChildHash
+			}
+			leaf.Links = newLinks
+		}
+
+		// Add to new leafs map with new hash as key
+		newLeafs[newHash] = leaf
+	}
+
+	// Replace the leafs map
+	d.Leafs = newLeafs
+
+	// Update root reference if needed
+	rootBare := StripLabel(d.Root)
+	d.Root = rootBare
+
+	// Update LatestLabel on root
+	if rootLeaf, exists := d.Leafs[d.Root]; exists {
+		rootLeaf.LatestLabel = strconv.Itoa(currentLabel - 1)
+	}
+
+	return nil
+}
