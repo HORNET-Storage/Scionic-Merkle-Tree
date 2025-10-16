@@ -37,21 +37,57 @@ type DagBuilder struct {
 }
 
 type DagLeaf struct {
-	Hash              string
-	ItemName          string
-	Type              LeafType
-	ContentHash       []byte
-	Content           []byte
-	ClassicMerkleRoot []byte
-	CurrentLinkCount  int
-	LatestLabel       string
-	LeafCount         int
-	Links             map[string]string
-	ParentHash        string
-	AdditionalData    map[string]string
-	MerkleTree        *merkletree.MerkleTree
-	LeafMap           map[string]merkletree.DataBlock
-	Proofs            map[string]*ClassicTreeBranch
+	// Hash is the CIDv1 content identifier for this leaf (label:hash format for non-root leaves)
+	Hash string `json:"hash"`
+
+	// ItemName is the filename or directory name for this leaf
+	ItemName string `json:"item_name"`
+
+	// Type specifies whether this is a file, directory, or chunk leaf
+	Type LeafType `json:"type"`
+
+	// ContentHash is the SHA-256 hash of the Content field (only present if Content is set)
+	ContentHash []byte `json:"content_hash,omitempty"`
+
+	// Content holds the actual file/chunk data
+	Content []byte `json:"content,omitempty"`
+
+	// ClassicMerkleRoot is the merkle root of all child leaf hashes (empty if no children)
+	ClassicMerkleRoot []byte `json:"classic_merkle_root,omitempty"`
+
+	// CurrentLinkCount is the total number of children this leaf has
+	CurrentLinkCount int `json:"current_link_count"`
+
+	// LatestLabel is the highest numeric label among all leaves (only set on root leaf)
+	LatestLabel string `json:"latest_label,omitempty"`
+
+	// LeafCount is the total number of leaves in the entire DAG (only set on root leaf)
+	LeafCount int `json:"leaf_count,omitempty"`
+
+	// ContentSize is the total size of actual content data across the entire DAG in bytes (only set on root leaf)
+	ContentSize int64 `json:"content_size,omitempty"`
+
+	// DagSize is the total serialized size of all leaves in the DAG in bytes (only set on root leaf)
+	// Note: This value is approximate (within a few bytes) due to the two-pass serialization approach
+	DagSize int64 `json:"dag_size,omitempty"`
+
+	// Links maps child labels to their hashes (label -> "label:hash")
+	Links map[string]string `json:"links,omitempty"`
+
+	// ParentHash is the hash of the parent leaf (used during transmission, not stored in final DAG)
+	ParentHash string `json:"parent_hash,omitempty"`
+
+	// AdditionalData holds custom metadata key-value pairs added by LeafProcessor
+	AdditionalData map[string]string `json:"additional_data,omitempty"`
+
+	// MerkleTree is the computed merkle tree for this leaf's children (not serialized, computed on demand)
+	MerkleTree *merkletree.MerkleTree `json:"-"`
+
+	// LeafMap maps child hashes to their merkle tree data blocks (not serialized, computed on demand)
+	LeafMap map[string]merkletree.DataBlock `json:"-"`
+
+	// Proofs contains merkle proofs for children during partial DAG transmission (not stored in final DAG)
+	Proofs map[string]*ClassicTreeBranch `json:"proofs,omitempty"`
 }
 
 type DagLeafBuilder struct {

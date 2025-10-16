@@ -330,7 +330,7 @@ func (b *DagBuilder) BuildDag(root string) *Dag {
 func (d *Dag) verifyFullDag() error {
 	return d.IterateDag(func(leaf *DagLeaf, parent *DagLeaf) error {
 		if leaf.Hash == d.Root {
-			err := leaf.VerifyRootLeaf()
+			err := leaf.VerifyRootLeaf(d)
 			if err != nil {
 				return err
 			}
@@ -366,7 +366,7 @@ func (d *Dag) verifyFullDag() error {
 func (d *Dag) verifyWithProofs() error {
 	// First verify the root leaf
 	rootLeaf := d.Leafs[d.Root]
-	if err := rootLeaf.VerifyRootLeaf(); err != nil {
+	if err := rootLeaf.VerifyRootLeaf(d); err != nil {
 		return fmt.Errorf("root leaf failed to verify: %w", err)
 	}
 
@@ -1000,7 +1000,7 @@ func (d *Dag) GetLeafSequence() []*TransmissionPacket {
 // VerifyTransmissionPacket verifies a transmission packet independently
 func (d *Dag) VerifyTransmissionPacket(packet *TransmissionPacket) error {
 	if packet.ParentHash == "" {
-		if err := packet.Leaf.VerifyRootLeaf(); err != nil {
+		if err := packet.Leaf.VerifyRootLeaf(nil); err != nil {
 			return fmt.Errorf("transmission packet root leaf verification failed: %w", err)
 		}
 	} else {
@@ -1366,7 +1366,7 @@ func (d *Dag) VerifyBatchedTransmissionPacket(packet *BatchedTransmissionPacket)
 		}
 
 		if parentHash == "" {
-			if err := childLeaf.VerifyRootLeaf(); err != nil {
+			if err := childLeaf.VerifyRootLeaf(nil); err != nil {
 				return fmt.Errorf("batched transmission packet root leaf %s verification failed: %w", childHash, err)
 			}
 		} else {

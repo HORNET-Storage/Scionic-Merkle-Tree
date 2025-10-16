@@ -79,6 +79,31 @@ func (b *DagBuilder) GetNextAvailableLabel() string {
 	return nextLabel
 }
 
+// CalculateTotalContentSize calculates the total size of actual content (not including metadata)
+func (b *DagBuilder) CalculateTotalContentSize() int64 {
+	var totalSize int64
+	for _, leaf := range b.Leafs {
+		if leaf.Content != nil {
+			totalSize += int64(len(leaf.Content))
+		}
+	}
+	return totalSize
+}
+
+// CalculateTotalDagSize calculates the total size of all serialized leaves in the DAG
+func (b *DagBuilder) CalculateTotalDagSize() (int64, error) {
+	var totalSize int64
+	for _, leaf := range b.Leafs {
+		serializable := leaf.ToSerializable()
+		serialized, err := cbor.Marshal(serializable)
+		if err != nil {
+			return 0, fmt.Errorf("failed to serialize leaf %s: %w", leaf.Hash, err)
+		}
+		totalSize += int64(len(serialized))
+	}
+	return totalSize, nil
+}
+
 func (b *DagLeafBuilder) BuildLeaf(additionalData map[string]string) (*DagLeaf, error) {
 	if b.LeafType == "" {
 		err := fmt.Errorf("leaf must have a type defined")
@@ -201,15 +226,25 @@ func (b *DagLeafBuilder) BuildRootLeaf(dag *DagBuilder, additionalData map[strin
 
 	latestLabel := dag.GetLatestLabel()
 
-	additionalData = sortMapByKeys(additionalData)
+	contentSize := dag.CalculateTotalContentSize()
+	if b.Data != nil {
+		contentSize += int64(len(b.Data))
+	}
 
-	leafData := struct {
+	childrenDagSize, err := dag.CalculateTotalDagSize()
+	if err != nil {
+		return nil, fmt.Errorf("failed to calculate dag size: %w", err)
+	}
+
+	tempLeafData := struct {
 		ItemName         string
 		Type             LeafType
 		MerkleRoot       []byte
 		CurrentLinkCount int
 		LatestLabel      string
 		LeafCount        int
+		ContentSize      int64
+		DagSize          int64
 		ContentHash      []byte
 		AdditionalData   []keyValue
 	}{
@@ -219,13 +254,49 @@ func (b *DagLeafBuilder) BuildRootLeaf(dag *DagBuilder, additionalData map[strin
 		CurrentLinkCount: len(b.Links),
 		LatestLabel:      latestLabel,
 		LeafCount:        len(dag.Leafs),
+		ContentSize:      contentSize,
+		DagSize:          0,
 		ContentHash:      nil,
 		AdditionalData:   sortMapForVerification(additionalData),
 	}
 
 	if b.Data != nil {
 		hash := sha256.Sum256(b.Data)
-		leafData.ContentHash = hash[:]
+		tempLeafData.ContentHash = hash[:]
+	}
+
+	tempSerialized, err := cbor.Marshal(tempLeafData)
+	if err != nil {
+		return nil, err
+	}
+	rootLeafSize := int64(len(tempSerialized))
+
+	finalDagSize := childrenDagSize + rootLeafSize
+
+	additionalData = sortMapByKeys(additionalData)
+
+	leafData := struct {
+		ItemName         string
+		Type             LeafType
+		MerkleRoot       []byte
+		CurrentLinkCount int
+		LatestLabel      string
+		LeafCount        int
+		ContentSize      int64
+		DagSize          int64
+		ContentHash      []byte
+		AdditionalData   []keyValue
+	}{
+		ItemName:         b.ItemName,
+		Type:             b.LeafType,
+		MerkleRoot:       merkleRoot,
+		CurrentLinkCount: len(b.Links),
+		LatestLabel:      latestLabel,
+		LeafCount:        len(dag.Leafs),
+		ContentSize:      contentSize,
+		DagSize:          finalDagSize,
+		ContentHash:      tempLeafData.ContentHash, // Reuse from temp
+		AdditionalData:   sortMapForVerification(additionalData),
 	}
 
 	serializedLeafData, err := cbor.Marshal(leafData)
@@ -254,6 +325,8 @@ func (b *DagLeafBuilder) BuildRootLeaf(dag *DagBuilder, additionalData map[strin
 		CurrentLinkCount:  len(b.Links),
 		LatestLabel:       latestLabel,
 		LeafCount:         len(dag.Leafs),
+		ContentSize:       contentSize,
+		DagSize:           finalDagSize,
 		Content:           b.Data,
 		ContentHash:       leafData.ContentHash,
 		Links:             sortedLinks,
@@ -449,11 +522,81 @@ func (leaf *DagLeaf) VerifyLeaf() error {
 	return nil
 }
 
-func (leaf *DagLeaf) VerifyRootLeaf() error {
+func (leaf *DagLeaf) VerifyRootLeaf(dag *Dag) error {
 	additionalData := sortMapByKeys(leaf.AdditionalData)
 
 	if leaf.ClassicMerkleRoot == nil || len(leaf.ClassicMerkleRoot) <= 0 {
 		leaf.ClassicMerkleRoot = []byte{}
+	}
+
+	var calculatedContentSize int64
+	var calculatedDagSize int64
+
+	isFullDag := dag != nil &&
+		len(dag.Leafs) == leaf.LeafCount &&
+		(leaf.ContentSize != 0 || leaf.DagSize != 0 || leaf.LeafCount == 1)
+
+	if isFullDag {
+		for _, dagLeaf := range dag.Leafs {
+			if dagLeaf.Content != nil {
+				calculatedContentSize += int64(len(dagLeaf.Content))
+			}
+		}
+
+		rootHash := GetHash(leaf.Hash)
+		var childrenDagSize int64
+		for _, dagLeaf := range dag.Leafs {
+			if GetHash(dagLeaf.Hash) == rootHash {
+				continue
+			}
+
+			serializable := dagLeaf.ToSerializable()
+			serialized, err := cbor.Marshal(serializable)
+			if err != nil {
+				return fmt.Errorf("failed to serialize leaf %s for size verification: %w", dagLeaf.Hash, err)
+			}
+			childrenDagSize += int64(len(serialized))
+		}
+
+		tempLeafData := struct {
+			ItemName         string
+			Type             LeafType
+			MerkleRoot       []byte
+			CurrentLinkCount int
+			LatestLabel      string
+			LeafCount        int
+			ContentSize      int64
+			DagSize          int64
+			ContentHash      []byte
+			AdditionalData   []keyValue
+		}{
+			ItemName:         leaf.ItemName,
+			Type:             leaf.Type,
+			MerkleRoot:       leaf.ClassicMerkleRoot,
+			CurrentLinkCount: leaf.CurrentLinkCount,
+			LatestLabel:      leaf.LatestLabel,
+			LeafCount:        leaf.LeafCount,
+			ContentSize:      leaf.ContentSize,
+			DagSize:          0,
+			ContentHash:      leaf.ContentHash,
+			AdditionalData:   sortMapForVerification(additionalData),
+		}
+
+		tempSerialized, err := cbor.Marshal(tempLeafData)
+		if err != nil {
+			return fmt.Errorf("failed to serialize root leaf for size verification: %w", err)
+		}
+		rootLeafSize := int64(len(tempSerialized))
+
+		calculatedDagSize = childrenDagSize + rootLeafSize
+
+		if leaf.ContentSize != calculatedContentSize {
+			return fmt.Errorf("content size mismatch: stored %d, calculated %d", leaf.ContentSize, calculatedContentSize)
+		}
+
+		if leaf.DagSize != calculatedDagSize {
+			return fmt.Errorf("dag size mismatch: stored %d, calculated %d", leaf.DagSize, calculatedDagSize)
+		}
 	}
 
 	leafData := struct {
@@ -463,6 +606,8 @@ func (leaf *DagLeaf) VerifyRootLeaf() error {
 		CurrentLinkCount int
 		LatestLabel      string
 		LeafCount        int
+		ContentSize      int64
+		DagSize          int64
 		ContentHash      []byte
 		AdditionalData   []keyValue
 	}{
@@ -472,6 +617,8 @@ func (leaf *DagLeaf) VerifyRootLeaf() error {
 		CurrentLinkCount: leaf.CurrentLinkCount,
 		LatestLabel:      leaf.LatestLabel,
 		LeafCount:        leaf.LeafCount,
+		ContentSize:      leaf.ContentSize,
+		DagSize:          leaf.DagSize,
 		ContentHash:      leaf.ContentHash,
 		AdditionalData:   sortMapForVerification(additionalData),
 	}
@@ -622,6 +769,8 @@ func (leaf *DagLeaf) Clone() *DagLeaf {
 		CurrentLinkCount:  leaf.CurrentLinkCount,
 		LatestLabel:       leaf.LatestLabel,
 		LeafCount:         leaf.LeafCount,
+		ContentSize:       leaf.ContentSize,
+		DagSize:           leaf.DagSize,
 		ParentHash:        leaf.ParentHash,
 		Links:             make(map[string]string),
 		AdditionalData:    make(map[string]string),

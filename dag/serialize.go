@@ -24,6 +24,8 @@ type SerializableDagLeaf struct {
 	CurrentLinkCount  int
 	LatestLabel       string
 	LeafCount         int
+	ContentSize       int64
+	DagSize           int64
 	Links             map[string]string
 	AdditionalData    map[string]string
 	StoredProofs      map[string]*ClassicTreeBranch `json:"stored_proofs,omitempty" cbor:"stored_proofs,omitempty"`
@@ -96,6 +98,8 @@ func FromSerializable(s *SerializableDag) *Dag {
 		if hash == s.Root {
 			dag.Leafs[hash].LeafCount = sLeaf.LeafCount
 			dag.Leafs[hash].LatestLabel = sLeaf.LatestLabel
+			dag.Leafs[hash].ContentSize = sLeaf.ContentSize
+			dag.Leafs[hash].DagSize = sLeaf.DagSize
 		}
 	}
 
@@ -156,6 +160,8 @@ func (leaf *DagLeaf) ToSerializable() *SerializableDagLeaf {
 		CurrentLinkCount:  leaf.CurrentLinkCount,
 		LatestLabel:       leaf.LatestLabel,
 		LeafCount:         leaf.LeafCount,
+		ContentSize:       leaf.ContentSize,
+		DagSize:           leaf.DagSize,
 		Links:             make(map[string]string),
 		AdditionalData:    make(map[string]string),
 		StoredProofs:      make(map[string]*ClassicTreeBranch),
@@ -234,6 +240,8 @@ func TransmissionPacketFromSerializable(s *SerializableTransmissionPacket) *Tran
 		CurrentLinkCount:  s.Leaf.CurrentLinkCount,
 		LatestLabel:       s.Leaf.LatestLabel,
 		LeafCount:         s.Leaf.LeafCount,
+		ContentSize:       s.Leaf.ContentSize,
+		DagSize:           s.Leaf.DagSize,
 		Links:             make(map[string]string),
 		AdditionalData:    make(map[string]string),
 		Proofs:            make(map[string]*ClassicTreeBranch),
