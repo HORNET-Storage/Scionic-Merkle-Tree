@@ -2,6 +2,7 @@ package dag
 
 import (
 	"io/fs"
+	"sync"
 
 	"github.com/HORNET-Storage/Scionic-Merkle-Tree/merkletree"
 )
@@ -34,6 +35,7 @@ type Dag struct {
 
 type DagBuilder struct {
 	Leafs map[string]*DagLeaf
+	mu    sync.Mutex
 }
 
 type DagLeaf struct {
@@ -147,6 +149,59 @@ func DisableChunking() {
 
 func SetDefaultChunkSize() {
 	SetChunkSize(DefaultChunkSize)
+}
+
+// DagBuilderConfig controls DAG building behavior
+type DagBuilderConfig struct {
+	// EnableParallel enables parallel processing of files and directories
+	// Default: false (sequential processing for backward compatibility)
+	EnableParallel bool
+
+	// MaxWorkers controls the maximum number of concurrent goroutines when parallel processing
+	// 0 = use runtime.NumCPU() (auto-detect based on available cores)
+	// -1 = unlimited workers (not recommended, may overwhelm system)
+	// >0 = use exactly this many workers
+	// Only used when EnableParallel is true
+	// Default: 0 (auto-detect)
+	MaxWorkers int
+
+	// TimestampRoot adds a timestamp to the root leaf's additional data
+	// Default: false
+	TimestampRoot bool
+
+	// Processor is an optional function that generates custom metadata for each leaf
+	// Default: nil (no custom metadata)
+	Processor LeafProcessor
+}
+
+// DefaultConfig returns a config with sequential processing (backward compatible)
+func DefaultConfig() *DagBuilderConfig {
+	return &DagBuilderConfig{
+		EnableParallel: false,
+		MaxWorkers:     0,
+		TimestampRoot:  false,
+		Processor:      nil,
+	}
+}
+
+// ParallelConfig returns a config with parallel processing enabled using all CPU cores
+func ParallelConfig() *DagBuilderConfig {
+	return &DagBuilderConfig{
+		EnableParallel: true,
+		MaxWorkers:     0, // Auto-detect
+		TimestampRoot:  false,
+		Processor:      nil,
+	}
+}
+
+// ParallelConfigWithWorkers returns a config with a specific number of workers
+func ParallelConfigWithWorkers(workers int) *DagBuilderConfig {
+	return &DagBuilderConfig{
+		EnableParallel: true,
+		MaxWorkers:     workers,
+		TimestampRoot:  false,
+		Processor:      nil,
+	}
 }
 
 // DiffType represents the type of difference between two DAG leaves

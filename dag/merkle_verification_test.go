@@ -1,7 +1,6 @@
 package dag
 
 import (
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,7 +9,7 @@ import (
 // TestMerkleRootVerificationDetectsTampering verifies that our enhanced verification
 // detects when children are tampered with even if the parent leaf hash is valid
 func TestMerkleRootVerificationDetectsTampering(t *testing.T) {
-	tmpDir, err := ioutil.TempDir("", "merkle_verification_test")
+	tmpDir, err := os.MkdirTemp("", "merkle_verification_test")
 	if err != nil {
 		t.Fatalf("Could not create temp directory: %s", err)
 	}
@@ -202,7 +201,7 @@ func TestMerkleRootVerificationDetectsTampering(t *testing.T) {
 
 // TestPartialDagMerkleVerification ensures that partial DAGs still work correctly
 func TestPartialDagMerkleVerification(t *testing.T) {
-	tmpDir, err := ioutil.TempDir("", "partial_dag_merkle_test")
+	tmpDir, err := os.MkdirTemp("", "partial_dag_merkle_test")
 	if err != nil {
 		t.Fatalf("Could not create temp directory: %s", err)
 	}
@@ -242,12 +241,21 @@ func TestPartialDagMerkleVerification(t *testing.T) {
 	// Use a range that's guaranteed to be within bounds
 	// GetPartial uses 1-indexed leaf positions, and end must be <= rootLeaf.LeafCount
 	rootLeaf := fullDag.Leafs[fullDag.Root]
-	maxRange := rootLeaf.LeafCount
+
+	// Make sure we actually create a PARTIAL dag, not a full one
+	// We need at least 3 leaves total to create a meaningful partial (1 root + 2+ children)
+	if rootLeaf.LeafCount < 3 {
+		t.Skip("Need at least 3 leaves (1 root + 2 children) to create a partial DAG")
+	}
+
+	// Request only SOME of the leaves, not all
+	// Cap at min(5, LeafCount-1) to ensure we're always leaving at least 1 leaf out
+	maxRange := rootLeaf.LeafCount - 1 // Always exclude at least one leaf
 	if maxRange > 5 {
 		maxRange = 5
 	}
 	if maxRange < 2 {
-		maxRange = 2 // Need at least 2 leaves for a valid range
+		maxRange = 2
 	}
 
 	partialDag, err := fullDag.GetPartial(1, maxRange)

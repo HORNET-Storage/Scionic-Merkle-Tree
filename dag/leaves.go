@@ -66,19 +66,6 @@ func (b *DagBuilder) GetLatestLabel() string {
 	return result
 }
 
-func (b *DagBuilder) GetNextAvailableLabel() string {
-	latestLabel := b.GetLatestLabel()
-
-	number, err := strconv.ParseInt(latestLabel, 10, 64)
-	if err != nil {
-		fmt.Println("Failed to parse label")
-	}
-
-	nextLabel := strconv.FormatInt(number+1, 10)
-
-	return nextLabel
-}
-
 // CalculateTotalContentSize calculates the total size of actual content (not including metadata)
 func (b *DagBuilder) CalculateTotalContentSize() int64 {
 	var totalSize int64
@@ -94,8 +81,50 @@ func (b *DagBuilder) CalculateTotalContentSize() int64 {
 func (b *DagBuilder) CalculateTotalDagSize() (int64, error) {
 	var totalSize int64
 	for _, leaf := range b.Leafs {
-		serializable := leaf.ToSerializable()
-		serialized, err := cbor.Marshal(serializable)
+		bareHash := GetHash(leaf.Hash)
+
+		var linkHashes []string
+		if len(leaf.Links) > 0 {
+			linkHashes = make([]string, 0, len(leaf.Links))
+			for _, linkHash := range leaf.Links {
+				linkHashes = append(linkHashes, GetHash(linkHash))
+			}
+			sort.Strings(linkHashes)
+		}
+
+		data := struct {
+			Hash              string
+			ItemName          string
+			Type              LeafType
+			ContentHash       []byte
+			Content           []byte
+			ClassicMerkleRoot []byte
+			CurrentLinkCount  int
+			LatestLabel       string
+			LeafCount         int
+			ContentSize       int64
+			DagSize           int64
+			Links             []string
+			AdditionalData    map[string]string
+			StoredProofs      map[string]*ClassicTreeBranch
+		}{
+			Hash:              bareHash,
+			ItemName:          leaf.ItemName,
+			Type:              leaf.Type,
+			ContentHash:       leaf.ContentHash,
+			Content:           leaf.Content,
+			ClassicMerkleRoot: leaf.ClassicMerkleRoot,
+			CurrentLinkCount:  leaf.CurrentLinkCount,
+			LatestLabel:       leaf.LatestLabel,
+			LeafCount:         leaf.LeafCount,
+			ContentSize:       leaf.ContentSize,
+			DagSize:           leaf.DagSize,
+			Links:             linkHashes,
+			AdditionalData:    sortMapByKeys(leaf.AdditionalData),
+			StoredProofs:      leaf.Proofs,
+		}
+
+		serialized, err := cbor.Marshal(data)
 		if err != nil {
 			return 0, fmt.Errorf("failed to serialize leaf %s: %w", leaf.Hash, err)
 		}
@@ -253,7 +282,7 @@ func (b *DagLeafBuilder) BuildRootLeaf(dag *DagBuilder, additionalData map[strin
 		MerkleRoot:       merkleRoot,
 		CurrentLinkCount: len(b.Links),
 		LatestLabel:      latestLabel,
-		LeafCount:        len(dag.Leafs),
+		LeafCount:        len(dag.Leafs) + 1,
 		ContentSize:      contentSize,
 		DagSize:          0,
 		ContentHash:      nil,
@@ -525,7 +554,7 @@ func (leaf *DagLeaf) VerifyLeaf() error {
 func (leaf *DagLeaf) VerifyRootLeaf(dag *Dag) error {
 	additionalData := sortMapByKeys(leaf.AdditionalData)
 
-	if leaf.ClassicMerkleRoot == nil || len(leaf.ClassicMerkleRoot) <= 0 {
+	if len(leaf.ClassicMerkleRoot) <= 0 {
 		leaf.ClassicMerkleRoot = []byte{}
 	}
 
@@ -535,6 +564,16 @@ func (leaf *DagLeaf) VerifyRootLeaf(dag *Dag) error {
 	isFullDag := dag != nil &&
 		len(dag.Leafs) == leaf.LeafCount &&
 		(leaf.ContentSize != 0 || leaf.DagSize != 0 || leaf.LeafCount == 1)
+
+	// If any leaf has pruned links, this is a partial DAG
+	if isFullDag && dag != nil {
+		for _, l := range dag.Leafs {
+			if len(l.Links) < l.CurrentLinkCount {
+				isFullDag = false
+				break
+			}
+		}
+	}
 
 	if isFullDag {
 		for _, dagLeaf := range dag.Leafs {
@@ -550,8 +589,50 @@ func (leaf *DagLeaf) VerifyRootLeaf(dag *Dag) error {
 				continue
 			}
 
-			serializable := dagLeaf.ToSerializable()
-			serialized, err := cbor.Marshal(serializable)
+			bareHash := GetHash(dagLeaf.Hash)
+
+			var linkHashes []string
+			if len(dagLeaf.Links) > 0 {
+				linkHashes = make([]string, 0, len(dagLeaf.Links))
+				for _, linkHash := range dagLeaf.Links {
+					linkHashes = append(linkHashes, GetHash(linkHash))
+				}
+				sort.Strings(linkHashes)
+			}
+
+			data := struct {
+				Hash              string
+				ItemName          string
+				Type              LeafType
+				ContentHash       []byte
+				Content           []byte
+				ClassicMerkleRoot []byte
+				CurrentLinkCount  int
+				LatestLabel       string
+				LeafCount         int
+				ContentSize       int64
+				DagSize           int64
+				Links             []string
+				AdditionalData    map[string]string
+				StoredProofs      map[string]*ClassicTreeBranch
+			}{
+				Hash:              bareHash,
+				ItemName:          dagLeaf.ItemName,
+				Type:              dagLeaf.Type,
+				ContentHash:       dagLeaf.ContentHash,
+				Content:           dagLeaf.Content,
+				ClassicMerkleRoot: dagLeaf.ClassicMerkleRoot,
+				CurrentLinkCount:  dagLeaf.CurrentLinkCount,
+				LatestLabel:       dagLeaf.LatestLabel,
+				LeafCount:         dagLeaf.LeafCount,
+				ContentSize:       dagLeaf.ContentSize,
+				DagSize:           dagLeaf.DagSize,
+				Links:             linkHashes,
+				AdditionalData:    sortMapByKeys(dagLeaf.AdditionalData),
+				StoredProofs:      dagLeaf.Proofs,
+			}
+
+			serialized, err := cbor.Marshal(data)
 			if err != nil {
 				return fmt.Errorf("failed to serialize leaf %s for size verification: %w", dagLeaf.Hash, err)
 			}
@@ -830,10 +911,10 @@ func GetLabel(hash string) string {
 // StripLabel removes the "label:" prefix from a hash string
 func StripLabel(hash string) string {
 	parts := strings.Split(hash, ":")
-	if len(parts) != 2 {
+	if len(parts) < 2 {
 		return hash
 	}
-	return parts[1]
+	return strings.Join(parts[1:], ":")
 }
 
 // ReplaceLabelInLink replaces the label in a child's link hash

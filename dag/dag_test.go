@@ -1,14 +1,13 @@
 package dag
 
 import (
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
 )
 
 func TestFull(t *testing.T) {
-	tmpDir, err := ioutil.TempDir("", "test")
+	tmpDir, err := os.MkdirTemp("", "test")
 	if err != nil {
 		t.Fatalf("Could not create temp directory: %s", err)
 	}

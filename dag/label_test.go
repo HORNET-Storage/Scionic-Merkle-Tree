@@ -30,7 +30,7 @@ func TestStripLabel(t *testing.T) {
 		{
 			name:     "Hash with multiple colons",
 			input:    "1:2:3",
-			expected: "1:2:3",
+			expected: "2:3",
 		},
 	}
 

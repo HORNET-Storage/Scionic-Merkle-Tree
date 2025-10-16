@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 
 	cbor "github.com/fxamacker/cbor/v2"
@@ -67,8 +68,50 @@ func TestContentSizeAndDagSizeAccuracy(t *testing.T) {
 			if GetHash(leaf.Hash) == rootHash {
 				continue // Skip root
 			}
-			serializable := leaf.ToSerializable()
-			serialized, err := cbor.Marshal(serializable)
+
+			bareHash := GetHash(leaf.Hash)
+			var linkHashes []string
+			if len(leaf.Links) > 0 {
+				linkHashes = make([]string, 0, len(leaf.Links))
+				for _, linkHash := range leaf.Links {
+					linkHashes = append(linkHashes, GetHash(linkHash))
+				}
+				sort.Strings(linkHashes)
+			}
+
+			data := struct {
+				Hash              string
+				ItemName          string
+				Type              LeafType
+				ContentHash       []byte
+				Content           []byte
+				ClassicMerkleRoot []byte
+				CurrentLinkCount  int
+				LatestLabel       string
+				LeafCount         int
+				ContentSize       int64
+				DagSize           int64
+				Links             []string
+				AdditionalData    map[string]string
+				StoredProofs      map[string]*ClassicTreeBranch
+			}{
+				Hash:              bareHash,
+				ItemName:          leaf.ItemName,
+				Type:              leaf.Type,
+				ContentHash:       leaf.ContentHash,
+				Content:           leaf.Content,
+				ClassicMerkleRoot: leaf.ClassicMerkleRoot,
+				CurrentLinkCount:  leaf.CurrentLinkCount,
+				LatestLabel:       leaf.LatestLabel,
+				LeafCount:         leaf.LeafCount,
+				ContentSize:       leaf.ContentSize,
+				DagSize:           leaf.DagSize,
+				Links:             linkHashes,
+				AdditionalData:    sortMapByKeys(leaf.AdditionalData),
+				StoredProofs:      leaf.Proofs,
+			}
+
+			serialized, err := cbor.Marshal(data)
 			if err != nil {
 				t.Fatalf("Failed to serialize leaf: %v", err)
 			}

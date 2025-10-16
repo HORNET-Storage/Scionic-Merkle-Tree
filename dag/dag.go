@@ -3,12 +3,13 @@ package dag
 import (
 	"fmt"
 	"io/fs"
-	"io/ioutil"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	merkle_tree "github.com/HORNET-Storage/Scionic-Merkle-Tree/tree"
@@ -81,6 +82,37 @@ func CreateDagCustom(path string, rootAdditionalData map[string]string, processo
 	return dag, nil
 }
 
+// CreateDagWithConfig creates a DAG using the provided configuration
+func CreateDagWithConfig(path string, config *DagBuilderConfig) (*Dag, error) {
+	if config == nil {
+		config = DefaultConfig()
+	}
+
+	var additionalData map[string]string = nil
+	if config.TimestampRoot {
+		currentTime := time.Now().UTC()
+		timeString := currentTime.Format(time.RFC3339)
+		additionalData = map[string]string{
+			"timestamp": timeString,
+		}
+	}
+
+	if config.EnableParallel {
+		return createDagParallel(path, additionalData, config.Processor, config)
+	}
+
+	dag, err := createDag(path, additionalData, config.Processor)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := dag.RecomputeLabels(); err != nil {
+		return nil, err
+	}
+
+	return dag, nil
+}
+
 func createDag(path string, additionalData map[string]string, processor LeafProcessor) (*Dag, error) {
 	dag := CreateDagBuilder()
 
@@ -108,10 +140,103 @@ func createDag(path string, additionalData map[string]string, processor LeafProc
 		return nil, err
 	}
 
-	dag.AddLeaf(leaf, nil)
-	rootHash := leaf.Hash
+	// Recompute labels on all children
+	if err := dag.RecomputeLabels(leaf); err != nil {
+		return nil, err
+	}
 
-	return dag.BuildDag(rootHash), nil
+	rootBuilder := CreateDagLeafBuilder(leaf.ItemName)
+	rootBuilder.SetType(leaf.Type)
+
+	// Add links using the recomputed labels
+	for _, oldLinkHash := range leaf.Links {
+		linkBareHash := StripLabel(oldLinkHash)
+		for hash := range dag.Leafs {
+			if StripLabel(hash) == linkBareHash {
+				rootBuilder.AddLink(GetLabel(hash), linkBareHash)
+				break
+			}
+		}
+	}
+
+	if leaf.Content != nil {
+		rootBuilder.SetData(leaf.Content)
+	}
+
+	rootLeaf, err := rootBuilder.BuildRootLeaf(dag, additionalData)
+	if err != nil {
+		return nil, err
+	}
+
+	// Add the root leaf to the builder
+	dag.Leafs[rootLeaf.Hash] = rootLeaf
+
+	return dag.BuildDag(rootLeaf.Hash), nil
+}
+
+// createDagParallel creates a DAG using parallel processing
+func createDagParallel(path string, additionalData map[string]string, processor LeafProcessor, config *DagBuilderConfig) (*Dag, error) {
+	dag := CreateDagBuilder()
+
+	fileInfo, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+
+	dirEntry, err := newDirEntry(path)
+	if err != nil {
+		return nil, err
+	}
+
+	parentPath := filepath.Dir(path)
+
+	var leaf *DagLeaf
+
+	if fileInfo.IsDir() {
+		leaf, err = processDirectoryParallel(dirEntry, path, &parentPath, dag, true, additionalData, processor, config)
+	} else {
+		leaf, err = processFileParallel(dirEntry, path, &parentPath, dag, true, additionalData, processor, config)
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	// Recompute labels on all children BEFORE building the root
+	if err := dag.RecomputeLabels(leaf); err != nil {
+		return nil, err
+	}
+
+	rootBuilder := CreateDagLeafBuilder(leaf.ItemName)
+	rootBuilder.SetType(leaf.Type)
+
+	// Add links using the recomputed labels
+	for _, oldLinkHash := range leaf.Links {
+		linkBareHash := StripLabel(oldLinkHash)
+		for hash := range dag.Leafs {
+			if StripLabel(hash) == linkBareHash {
+				newLabel := GetLabel(hash)
+				rootBuilder.AddLink(newLabel, linkBareHash)
+				break
+			}
+		}
+	}
+
+	if leaf.Content != nil {
+		rootBuilder.SetData(leaf.Content)
+	}
+
+	rootLeaf, err := rootBuilder.BuildRootLeaf(dag, additionalData)
+	if err != nil {
+		return nil, err
+	}
+
+	// Add the root leaf to the builder
+	dag.mu.Lock()
+	dag.Leafs[rootLeaf.Hash] = rootLeaf
+	dag.mu.Unlock()
+
+	return dag.BuildDag(rootLeaf.Hash), nil
 }
 
 func processEntry(entry fs.DirEntry, fullPath string, path *string, dag *DagBuilder, processor LeafProcessor) (*DagLeaf, error) {
@@ -165,24 +290,20 @@ func processDirectory(entry fs.DirEntry, fullPath string, path *string, dag *Dag
 
 	var result *DagLeaf
 
-	for _, childEntry := range entries {
+	// Use simple sequential labels (0, 1, 2...) - will be replaced by RecomputeLabels()
+	for i, childEntry := range entries {
 		leaf, err := processEntry(childEntry, filepath.Join(fullPath, childEntry.Name()), &fullPath, dag, processor)
 		if err != nil {
 			return nil, err
 		}
 
-		label := dag.GetNextAvailableLabel()
-		builder.AddLink(label, leaf.Hash)
-		leaf.SetLabel(label)
+		tempLabel := strconv.Itoa(i)
+		builder.AddLink(tempLabel, leaf.Hash)
+		leaf.SetLabel(tempLabel)
 		dag.AddLeaf(leaf, nil)
 	}
 
-	if isRoot {
-		result, err = builder.BuildRootLeaf(dag, additionalData)
-	} else {
-		result, err = builder.BuildLeaf(additionalData)
-	}
-
+	result, err = builder.BuildLeaf(additionalData)
 	if err != nil {
 		return nil, err
 	}
@@ -231,6 +352,7 @@ func processFile(entry fs.DirEntry, fullPath string, path *string, dag *DagBuild
 		if len(fileChunks) == 1 {
 			builder.SetData(fileChunks[0])
 		} else {
+			// Use simple sequential labels for chunks - will be replaced by RecomputeLabels()
 			for i, chunk := range fileChunks {
 				chunkEntryPath := filepath.Join(relPath, strconv.Itoa(i))
 				chunkBuilder := CreateDagLeafBuilder(chunkEntryPath)
@@ -244,27 +366,21 @@ func processFile(entry fs.DirEntry, fullPath string, path *string, dag *DagBuild
 					return nil, err
 				}
 
-				label := dag.GetNextAvailableLabel()
-				builder.AddLink(label, chunkLeaf.Hash)
-				chunkLeaf.SetLabel(label)
+				tempLabel := strconv.Itoa(i)
+				builder.AddLink(tempLabel, chunkLeaf.Hash)
+				chunkLeaf.SetLabel(tempLabel)
 				dag.AddLeaf(chunkLeaf, nil)
 			}
 		}
 	}
 
-	if isRoot {
-		result, err = builder.BuildRootLeaf(dag, additionalData)
-	} else {
-		result, err = builder.BuildLeaf(additionalData)
-	}
-
+	result, err = builder.BuildLeaf(additionalData)
 	if err != nil {
 		return nil, err
 	}
 
 	return result, nil
 }
-
 func chunkFile(fileData []byte, chunkSize int) [][]byte {
 	var chunks [][]byte
 	fileSize := len(fileData)
@@ -284,13 +400,252 @@ func chunkFile(fileData []byte, chunkSize int) [][]byte {
 	return chunks
 }
 
+// processEntryResult holds the result of processing a single entry in parallel
+type processEntryResult struct {
+	leaf  *DagLeaf
+	err   error
+	index int
+}
+
+// processDirectoryParallel processes a directory using parallel workers
+func processDirectoryParallel(entry fs.DirEntry, fullPath string, path *string, dag *DagBuilder, isRoot bool, additionalData map[string]string, processor LeafProcessor, config *DagBuilderConfig) (*DagLeaf, error) {
+	relPath, err := filepath.Rel(*path, fullPath)
+	if err != nil {
+		return nil, err
+	}
+
+	// Apply processor if provided
+	if processor != nil && !isRoot {
+		customData := processor(fullPath, relPath, entry, isRoot, DirectoryLeafType)
+		if customData != nil {
+			if additionalData == nil {
+				additionalData = make(map[string]string)
+			}
+			for k, v := range customData {
+				additionalData[k] = v
+			}
+		}
+	}
+
+	builder := CreateDagLeafBuilder(relPath)
+	builder.SetType(DirectoryLeafType)
+
+	entries, err := os.ReadDir(fullPath)
+	if err != nil {
+		return nil, err
+	}
+
+	// Sort entries by name
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Name() < entries[j].Name()
+	})
+
+	// Determine worker count
+	maxWorkers := config.MaxWorkers
+	if maxWorkers == 0 {
+		maxWorkers = runtime.NumCPU()
+	} else if maxWorkers < 0 {
+		maxWorkers = len(entries)
+	}
+
+	// Limit workers to number of entries
+	if maxWorkers > len(entries) {
+		maxWorkers = len(entries)
+	}
+
+	// If only one entry, process sequentially
+	if len(entries) <= 1 {
+		for i, childEntry := range entries {
+			leaf, err := processEntryParallel(childEntry, filepath.Join(fullPath, childEntry.Name()), &fullPath, dag, processor, config)
+			if err != nil {
+				return nil, err
+			}
+
+			tempLabel := strconv.Itoa(i)
+			builder.AddLink(tempLabel, leaf.Hash)
+			leaf.SetLabel(tempLabel)
+			dag.AddLeafSafe(leaf, nil)
+		}
+
+		var result *DagLeaf
+		if isRoot {
+			result, err = builder.BuildRootLeaf(dag, additionalData)
+		} else {
+			result, err = builder.BuildLeaf(additionalData)
+		}
+
+		return result, err
+	}
+
+	// Process entries in parallel
+	jobs := make(chan struct {
+		entry fs.DirEntry
+		index int
+	}, len(entries))
+	results := make(chan processEntryResult, len(entries))
+
+	// Start worker pool
+	var wg sync.WaitGroup
+	for w := 0; w < maxWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for job := range jobs {
+				leaf, err := processEntryParallel(job.entry, filepath.Join(fullPath, job.entry.Name()), &fullPath, dag, processor, config)
+				results <- processEntryResult{
+					leaf:  leaf,
+					err:   err,
+					index: job.index,
+				}
+			}
+		}()
+	}
+
+	// Send jobs (already sorted)
+	for i, e := range entries {
+		jobs <- struct {
+			entry fs.DirEntry
+			index int
+		}{entry: e, index: i}
+	}
+	close(jobs)
+
+	// Wait for all workers to finish
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	// Collect results and sort by original index to maintain determinism
+	resultSlice := make([]processEntryResult, 0, len(entries))
+	for result := range results {
+		resultSlice = append(resultSlice, result)
+	}
+
+	// Sort results by original index
+	sort.Slice(resultSlice, func(i, j int) bool {
+		return resultSlice[i].index < resultSlice[j].index
+	})
+
+	// Apply results in sorted order
+	for i, result := range resultSlice {
+		if result.err != nil {
+			return nil, result.err
+		}
+
+		tempLabel := strconv.Itoa(i)
+		builder.AddLink(tempLabel, result.leaf.Hash)
+		result.leaf.SetLabel(tempLabel)
+		dag.AddLeafSafe(result.leaf, nil)
+	}
+
+	finalResult, err := builder.BuildLeaf(additionalData)
+	if err != nil {
+		return nil, err
+	}
+
+	return finalResult, nil
+}
+
+// processEntryParallel is the parallel version of processEntry
+func processEntryParallel(entry fs.DirEntry, fullPath string, path *string, dag *DagBuilder, processor LeafProcessor, config *DagBuilderConfig) (*DagLeaf, error) {
+	var result *DagLeaf
+	var err error
+
+	entryPath := filepath.Join(*path, entry.Name())
+
+	if entry.IsDir() {
+		result, err = processDirectoryParallel(entry, entryPath, path, dag, false, nil, processor, config)
+	} else {
+		result, err = processFileParallel(entry, entryPath, path, dag, false, nil, processor, config)
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// processFileParallel processes a file (parallel mode)
+func processFileParallel(entry fs.DirEntry, fullPath string, path *string, dag *DagBuilder, isRoot bool, additionalData map[string]string, processor LeafProcessor, config *DagBuilderConfig) (*DagLeaf, error) {
+	relPath, err := filepath.Rel(*path, fullPath)
+	if err != nil {
+		return nil, err
+	}
+
+	// Apply processor if provided and not root
+	if processor != nil && !isRoot {
+		customData := processor(fullPath, relPath, entry, isRoot, FileLeafType)
+		if customData != nil {
+			if additionalData == nil {
+				additionalData = make(map[string]string)
+			}
+			for k, v := range customData {
+				additionalData[k] = v
+			}
+		}
+	}
+
+	var result *DagLeaf
+	builder := CreateDagLeafBuilder(relPath)
+	builder.SetType(FileLeafType)
+
+	fileData, err := os.ReadFile(fullPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if ChunkSize <= 0 {
+		builder.SetData(fileData)
+	} else {
+		fileChunks := chunkFile(fileData, ChunkSize)
+
+		if len(fileChunks) == 1 {
+			builder.SetData(fileChunks[0])
+		} else {
+			for i, chunk := range fileChunks {
+				chunkEntryPath := filepath.Join(relPath, strconv.Itoa(i))
+				chunkBuilder := CreateDagLeafBuilder(chunkEntryPath)
+				chunkBuilder.SetType(ChunkLeafType)
+				chunkBuilder.SetData(chunk)
+
+				chunkLeaf, err := chunkBuilder.BuildLeaf(nil)
+				if err != nil {
+					return nil, err
+				}
+
+				tempLabel := strconv.Itoa(i)
+				builder.AddLink(tempLabel, chunkLeaf.Hash)
+				chunkLeaf.SetLabel(tempLabel)
+				dag.AddLeafSafe(chunkLeaf, nil)
+			}
+		}
+	}
+
+	result, err = builder.BuildLeaf(additionalData)
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
 func CreateDagBuilder() *DagBuilder {
 	return &DagBuilder{
 		Leafs: map[string]*DagLeaf{},
 	}
 }
 
-func (b *DagBuilder) AddLeaf(leaf *DagLeaf, parentLeaf *DagLeaf) error {
+// AddLeafSafe is a thread-safe version of AddLeaf for parallel processing
+func (b *DagBuilder) AddLeafSafe(leaf *DagLeaf, parentLeaf *DagLeaf) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.addLeafUnsafe(leaf, parentLeaf)
+}
+
+// addLeafUnsafe is the internal implementation without locking
+func (b *DagBuilder) addLeafUnsafe(leaf *DagLeaf, parentLeaf *DagLeaf) error {
 	if parentLeaf != nil {
 		label := GetLabel(leaf.Hash)
 		_, exists := parentLeaf.Links[label]
@@ -319,11 +674,130 @@ func (b *DagBuilder) AddLeaf(leaf *DagLeaf, parentLeaf *DagLeaf) error {
 	return nil
 }
 
+func (b *DagBuilder) AddLeaf(leaf *DagLeaf, parentLeaf *DagLeaf) error {
+	return b.addLeafUnsafe(leaf, parentLeaf)
+}
+
 func (b *DagBuilder) BuildDag(root string) *Dag {
 	return &Dag{
 		Leafs: b.Leafs,
 		Root:  root,
 	}
+}
+
+// RecomputeLabels recomputes labels for all leaves in the builder using breadth-first traversal
+func (b *DagBuilder) RecomputeLabels(rootLeaf *DagLeaf) error {
+	labelMapping := make(map[string]string)
+
+	// The root never gets a label
+	rootBareHash := StripLabel(rootLeaf.Hash)
+	labelMapping[rootBareHash] = ""
+
+	// Breadth-first traversal starting from root's children
+	currentLabel := 1
+	queue := []string{}
+	visited := make(map[string]bool)
+
+	childHashes := make([]string, 0, len(rootLeaf.Links))
+	for _, childHashWithLabel := range rootLeaf.Links {
+		childBareHash := StripLabel(childHashWithLabel)
+		childHashes = append(childHashes, childBareHash)
+	}
+	sort.Strings(childHashes)
+
+	for _, childBareHash := range childHashes {
+		if !visited[childBareHash] {
+			visited[childBareHash] = true
+			newLabel := strconv.Itoa(currentLabel)
+			currentLabel++
+			labelMapping[childBareHash] = newLabel
+			queue = append(queue, childBareHash)
+		}
+	}
+
+	// Process remaining nodes
+	for len(queue) > 0 {
+		currentBareHash := queue[0]
+		queue = queue[1:]
+
+		// Find the leaf with this bare hash
+		var currentLeaf *DagLeaf
+		for hash, leaf := range b.Leafs {
+			if StripLabel(hash) == currentBareHash {
+				currentLeaf = leaf
+				break
+			}
+		}
+
+		if currentLeaf == nil {
+			continue
+		}
+
+		// Process all children of this leaf
+		childHashes := make([]string, 0, len(currentLeaf.Links))
+		for _, childHashWithLabel := range currentLeaf.Links {
+			childBareHash := StripLabel(childHashWithLabel)
+			childHashes = append(childHashes, childBareHash)
+		}
+		sort.Strings(childHashes)
+
+		for _, childBareHash := range childHashes {
+			if visited[childBareHash] {
+				continue
+			}
+			visited[childBareHash] = true
+
+			newLabel := strconv.Itoa(currentLabel)
+			currentLabel++
+			labelMapping[childBareHash] = newLabel
+			queue = append(queue, childBareHash)
+		}
+	}
+
+	// Apply the new labels
+	newLeafs := make(map[string]*DagLeaf)
+
+	for oldHash, leaf := range b.Leafs {
+		bareHash := StripLabel(oldHash)
+		newLabel, exists := labelMapping[bareHash]
+		if !exists {
+			return fmt.Errorf("no label mapping found for bare hash %s", bareHash)
+		}
+
+		var newHash string
+		if newLabel == "" {
+			newHash = bareHash
+		} else {
+			newHash = newLabel + ":" + bareHash
+		}
+
+		leaf.Hash = newHash
+
+		// Update links
+		newLinks := make(map[string]string)
+		for _, oldLinkHash := range leaf.Links {
+			linkBareHash := StripLabel(oldLinkHash)
+			newLinkLabel, exists := labelMapping[linkBareHash]
+			if !exists {
+				return fmt.Errorf("no label mapping found for link bare hash %s", linkBareHash)
+			}
+
+			var newLinkHash string
+			if newLinkLabel == "" {
+				newLinkHash = linkBareHash
+			} else {
+				newLinkHash = newLinkLabel + ":" + linkBareHash
+			}
+
+			newLinks[newLinkLabel] = newLinkHash
+		}
+		leaf.Links = newLinks
+
+		newLeafs[newHash] = leaf
+	}
+
+	b.Leafs = newLeafs
+	return nil
 }
 
 // verifyFullDag verifies a complete DAG by checking parent-child relationships
@@ -462,7 +936,7 @@ func (dag *Dag) CreateDirectory(path string) error {
 }
 
 func ReadDag(path string) (*Dag, error) {
-	fileData, err := ioutil.ReadFile(path)
+	fileData, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("could not read file: %w", err)
 	}
@@ -523,14 +997,27 @@ func (dag *Dag) GetContentFromLeaf(leaf *DagLeaf) ([]byte, error) {
 func (d *Dag) IterateDag(processLeaf func(leaf *DagLeaf, parent *DagLeaf) error) error {
 	var iterate func(leafHash string, parentHash *string) error
 	iterate = func(leafHash string, parentHash *string) error {
-		leaf, exists := d.Leafs[leafHash]
-		if !exists {
-			return fmt.Errorf("child is missing when iterating dag")
+		bareLeafHash := StripLabel(leafHash)
+		var leaf *DagLeaf
+		for hash, l := range d.Leafs {
+			if StripLabel(hash) == bareLeafHash {
+				leaf = l
+				break
+			}
+		}
+		if leaf == nil {
+			return fmt.Errorf("child is missing when iterating dag (bare hash: %s)", bareLeafHash)
 		}
 
 		var parent *DagLeaf
 		if parentHash != nil {
-			parent = d.Leafs[*parentHash]
+			bareParentHash := StripLabel(*parentHash)
+			for hash, l := range d.Leafs {
+				if StripLabel(hash) == bareParentHash {
+					parent = l
+					break
+				}
+			}
 		}
 
 		err := processLeaf(leaf, parent)

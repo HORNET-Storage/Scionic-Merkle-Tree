@@ -2,7 +2,6 @@ package dag
 
 import (
 	"bytes"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,7 +10,7 @@ import (
 
 func TestOutOfRangeLeafRequests(t *testing.T) {
 	// Create a simple DAG with known number of leaves
-	tmpDir, err := ioutil.TempDir("", "test")
+	tmpDir, err := os.MkdirTemp("", "test")
 	if err != nil {
 		t.Fatalf("Could not create temp directory: %s", err)
 	}
@@ -19,7 +18,7 @@ func TestOutOfRangeLeafRequests(t *testing.T) {
 
 	// Create 5 test files
 	for i := 0; i < 5; i++ {
-		err := ioutil.WriteFile(
+		err := os.WriteFile(
 			filepath.Join(tmpDir, string(rune('a'+i))),
 			[]byte("test content"),
 			0644,
@@ -61,7 +60,7 @@ func TestOutOfRangeLeafRequests(t *testing.T) {
 }
 
 func TestSingleFileScenarios(t *testing.T) {
-	tmpDir, err := ioutil.TempDir("", "test")
+	tmpDir, err := os.MkdirTemp("", "test")
 	if err != nil {
 		t.Fatalf("Could not create temp directory: %s", err)
 	}
@@ -113,7 +112,7 @@ func TestSingleFileScenarios(t *testing.T) {
 			}
 
 			// Create the test file
-			err := ioutil.WriteFile(filePath, content, 0644)
+			err := os.WriteFile(filePath, content, 0644)
 			if err != nil {
 				t.Fatalf("Failed to create test file: %v", err)
 			}
