@@ -239,7 +239,18 @@ func TestPartialDagMerkleVerification(t *testing.T) {
 	}
 
 	// Create a partial DAG by getting a range of the full DAG
-	partialDag, err := fullDag.GetPartial(0, 5)
+	// Use a range that's guaranteed to be within bounds
+	// GetPartial uses 1-indexed leaf positions, and end must be <= rootLeaf.LeafCount
+	rootLeaf := fullDag.Leafs[fullDag.Root]
+	maxRange := rootLeaf.LeafCount
+	if maxRange > 5 {
+		maxRange = 5
+	}
+	if maxRange < 2 {
+		maxRange = 2 // Need at least 2 leaves for a valid range
+	}
+
+	partialDag, err := fullDag.GetPartial(1, maxRange)
 	if err != nil {
 		t.Fatalf("Failed to create partial DAG: %s", err)
 	}
