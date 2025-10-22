@@ -7,8 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
-	"strings"
 
 	"github.com/HORNET-Storage/Scionic-Merkle-Tree/merkletree"
 
@@ -24,7 +22,7 @@ import (
 func CreateDagLeafBuilder(name string) *DagLeafBuilder {
 	builder := &DagLeafBuilder{
 		ItemName: name,
-		Links:    map[string]string{},
+		Links:    []string{},
 	}
 
 	return builder
@@ -38,99 +36,8 @@ func (b *DagLeafBuilder) SetData(data []byte) {
 	b.Data = data
 }
 
-func (b *DagLeafBuilder) AddLink(label string, hash string) {
-	b.Links[label] = label + ":" + hash
-}
-
-func (b *DagBuilder) GetLatestLabel() string {
-	var result string = "0"
-	var latestLabel int64 = 0
-	for hash := range b.Leafs {
-		label := GetLabel(hash)
-
-		if label == "" {
-			fmt.Println("Failed to find label in hash")
-		}
-
-		parsed, err := strconv.ParseInt(label, 10, 64)
-		if err != nil {
-			fmt.Println("Failed to parse label")
-		}
-
-		if parsed > latestLabel {
-			latestLabel = parsed
-			result = label
-		}
-	}
-
-	return result
-}
-
-// CalculateTotalContentSize calculates the total size of actual content (not including metadata)
-func (b *DagBuilder) CalculateTotalContentSize() int64 {
-	var totalSize int64
-	for _, leaf := range b.Leafs {
-		if leaf.Content != nil {
-			totalSize += int64(len(leaf.Content))
-		}
-	}
-	return totalSize
-}
-
-// CalculateTotalDagSize calculates the total size of all serialized leaves in the DAG
-func (b *DagBuilder) CalculateTotalDagSize() (int64, error) {
-	var totalSize int64
-	for _, leaf := range b.Leafs {
-		bareHash := GetHash(leaf.Hash)
-
-		var linkHashes []string
-		if len(leaf.Links) > 0 {
-			linkHashes = make([]string, 0, len(leaf.Links))
-			for _, linkHash := range leaf.Links {
-				linkHashes = append(linkHashes, GetHash(linkHash))
-			}
-			sort.Strings(linkHashes)
-		}
-
-		data := struct {
-			Hash              string
-			ItemName          string
-			Type              LeafType
-			ContentHash       []byte
-			Content           []byte
-			ClassicMerkleRoot []byte
-			CurrentLinkCount  int
-			LatestLabel       string
-			LeafCount         int
-			ContentSize       int64
-			DagSize           int64
-			Links             []string
-			AdditionalData    map[string]string
-			StoredProofs      map[string]*ClassicTreeBranch
-		}{
-			Hash:              bareHash,
-			ItemName:          leaf.ItemName,
-			Type:              leaf.Type,
-			ContentHash:       leaf.ContentHash,
-			Content:           leaf.Content,
-			ClassicMerkleRoot: leaf.ClassicMerkleRoot,
-			CurrentLinkCount:  leaf.CurrentLinkCount,
-			LatestLabel:       leaf.LatestLabel,
-			LeafCount:         leaf.LeafCount,
-			ContentSize:       leaf.ContentSize,
-			DagSize:           leaf.DagSize,
-			Links:             linkHashes,
-			AdditionalData:    sortMapByKeys(leaf.AdditionalData),
-			StoredProofs:      leaf.Proofs,
-		}
-
-		serialized, err := cbor.Marshal(data)
-		if err != nil {
-			return 0, fmt.Errorf("failed to serialize leaf %s: %w", leaf.Hash, err)
-		}
-		totalSize += int64(len(serialized))
-	}
-	return totalSize, nil
+func (b *DagLeafBuilder) AddLink(hash string) {
+	b.Links = append(b.Links, hash)
 }
 
 func (b *DagLeafBuilder) BuildLeaf(additionalData map[string]string) (*DagLeaf, error) {
@@ -146,8 +53,7 @@ func (b *DagLeafBuilder) BuildLeaf(additionalData map[string]string) (*DagLeaf, 
 	if len(b.Links) > 1 {
 		builder := merkle_tree.CreateTree()
 		for _, link := range b.Links {
-			hash := GetHash(link)
-			builder.AddLeaf(hash, hash)
+			builder.AddLeaf(link, link)
 		}
 
 		var err error
@@ -159,12 +65,12 @@ func (b *DagLeafBuilder) BuildLeaf(additionalData map[string]string) (*DagLeaf, 
 		merkleRoot = merkleTree.Root
 	} else if len(b.Links) == 1 {
 		for _, link := range b.Links {
-			merkleRoot = []byte(GetHash(link))
+			merkleRoot = []byte(link)
 			break
 		}
 	}
 
-	additionalData = sortMapByKeys(additionalData)
+	additionalData = SortMapByKeys(additionalData)
 
 	leafData := struct {
 		ItemName         string
@@ -172,14 +78,14 @@ func (b *DagLeafBuilder) BuildLeaf(additionalData map[string]string) (*DagLeaf, 
 		MerkleRoot       []byte
 		CurrentLinkCount int
 		ContentHash      []byte
-		AdditionalData   []keyValue
+		AdditionalData   []KeyValue
 	}{
 		ItemName:         b.ItemName,
 		Type:             b.LeafType,
 		MerkleRoot:       merkleRoot,
 		CurrentLinkCount: len(b.Links),
 		ContentHash:      nil,
-		AdditionalData:   sortMapForVerification(additionalData),
+		AdditionalData:   SortMapForVerification(additionalData),
 	}
 
 	if b.Data != nil {
@@ -204,7 +110,15 @@ func (b *DagLeafBuilder) BuildLeaf(additionalData map[string]string) (*DagLeaf, 
 		return nil, err
 	}
 
-	sortedLinks := sortMapByKeys(b.Links)
+	// Sort links for consistency (but only for directories, not files with chunks)
+	// For files, chunk order must be preserved for correct reconstruction
+	sortedLinks := b.Links
+	if b.LeafType == DirectoryLeafType {
+		sortedLinks = make([]string, len(b.Links))
+		copy(sortedLinks, b.Links)
+		sort.Strings(sortedLinks)
+	}
+
 	leaf := &DagLeaf{
 		Hash:              c.String(),
 		ItemName:          b.ItemName,
@@ -235,8 +149,7 @@ func (b *DagLeafBuilder) BuildRootLeaf(dag *DagBuilder, additionalData map[strin
 	if len(b.Links) > 1 {
 		builder := merkle_tree.CreateTree()
 		for _, link := range b.Links {
-			hash := GetHash(link)
-			builder.AddLeaf(hash, hash)
+			builder.AddLeaf(link, link)
 		}
 
 		var err error
@@ -248,19 +161,18 @@ func (b *DagLeafBuilder) BuildRootLeaf(dag *DagBuilder, additionalData map[strin
 		merkleRoot = merkleTree.Root
 	} else if len(b.Links) == 1 {
 		for _, link := range b.Links {
-			merkleRoot = []byte(GetHash(link))
+			merkleRoot = []byte(link)
 			break
 		}
 	}
 
-	latestLabel := dag.GetLatestLabel()
-
-	contentSize := dag.CalculateTotalContentSize()
+	dagObj := &Dag{Leafs: dag.Leafs}
+	contentSize := CalculateTotalContentSize(dagObj)
 	if b.Data != nil {
 		contentSize += int64(len(b.Data))
 	}
 
-	childrenDagSize, err := dag.CalculateTotalDagSize()
+	childrenDagSize, err := CalculateTotalDagSize(dagObj)
 	if err != nil {
 		return nil, fmt.Errorf("failed to calculate dag size: %w", err)
 	}
@@ -270,23 +182,21 @@ func (b *DagLeafBuilder) BuildRootLeaf(dag *DagBuilder, additionalData map[strin
 		Type             LeafType
 		MerkleRoot       []byte
 		CurrentLinkCount int
-		LatestLabel      string
 		LeafCount        int
 		ContentSize      int64
 		DagSize          int64
 		ContentHash      []byte
-		AdditionalData   []keyValue
+		AdditionalData   []KeyValue
 	}{
 		ItemName:         b.ItemName,
 		Type:             b.LeafType,
 		MerkleRoot:       merkleRoot,
 		CurrentLinkCount: len(b.Links),
-		LatestLabel:      latestLabel,
 		LeafCount:        len(dag.Leafs) + 1,
 		ContentSize:      contentSize,
 		DagSize:          0,
 		ContentHash:      nil,
-		AdditionalData:   sortMapForVerification(additionalData),
+		AdditionalData:   SortMapForVerification(additionalData),
 	}
 
 	if b.Data != nil {
@@ -302,30 +212,28 @@ func (b *DagLeafBuilder) BuildRootLeaf(dag *DagBuilder, additionalData map[strin
 
 	finalDagSize := childrenDagSize + rootLeafSize
 
-	additionalData = sortMapByKeys(additionalData)
+	additionalData = SortMapByKeys(additionalData)
 
 	leafData := struct {
 		ItemName         string
 		Type             LeafType
 		MerkleRoot       []byte
 		CurrentLinkCount int
-		LatestLabel      string
 		LeafCount        int
 		ContentSize      int64
 		DagSize          int64
 		ContentHash      []byte
-		AdditionalData   []keyValue
+		AdditionalData   []KeyValue
 	}{
 		ItemName:         b.ItemName,
 		Type:             b.LeafType,
 		MerkleRoot:       merkleRoot,
 		CurrentLinkCount: len(b.Links),
-		LatestLabel:      latestLabel,
-		LeafCount:        len(dag.Leafs),
+		LeafCount:        len(dag.Leafs) + 1,
 		ContentSize:      contentSize,
 		DagSize:          finalDagSize,
-		ContentHash:      tempLeafData.ContentHash, // Reuse from temp
-		AdditionalData:   sortMapForVerification(additionalData),
+		ContentHash:      tempLeafData.ContentHash,
+		AdditionalData:   SortMapForVerification(additionalData),
 	}
 
 	serializedLeafData, err := cbor.Marshal(leafData)
@@ -345,15 +253,22 @@ func (b *DagLeafBuilder) BuildRootLeaf(dag *DagBuilder, additionalData map[strin
 		return nil, err
 	}
 
-	sortedLinks := sortMapByKeys(b.Links)
+	// Sort links for consistency (but only for directories, not files with chunks)
+	// For files, chunk order must be preserved for correct reconstruction
+	sortedLinks := b.Links
+	if b.LeafType == DirectoryLeafType {
+		sortedLinks = make([]string, len(b.Links))
+		copy(sortedLinks, b.Links)
+		sort.Strings(sortedLinks)
+	}
+
 	leaf := &DagLeaf{
 		Hash:              c.String(),
 		ItemName:          b.ItemName,
 		Type:              b.LeafType,
 		ClassicMerkleRoot: merkleRoot,
 		CurrentLinkCount:  len(b.Links),
-		LatestLabel:       latestLabel,
-		LeafCount:         len(dag.Leafs),
+		LeafCount:         len(dag.Leafs) + 1,
 		ContentSize:       contentSize,
 		DagSize:           finalDagSize,
 		Content:           b.Data,
@@ -382,50 +297,13 @@ func (leaf *DagLeaf) GetBranch(key string) (*ClassicTreeBranch, error) {
 			return nil, fmt.Errorf("merkle tree not built for leaf")
 		}
 
-		// Find the hash that corresponds to this key
-		var targetHash string
-		var lookupHash string
-
-		// First try using the key directly as a label
-		if _, exists := leaf.Links[key]; exists {
-			targetHash = leaf.Links[key]
-			lookupHash = GetHash(targetHash)
-		} else if HasLabel(key) {
-			// If the key has a label, try finding it in the links
-			label := GetLabel(key)
-			if h, exists := leaf.Links[label]; exists {
-				targetHash = h
-				lookupHash = GetHash(targetHash)
-			} else {
-				// Otherwise, extract the hash from the key
-				lookupHash = GetHash(key)
-				targetHash = key
-			}
-		} else {
-			// If the key is a hash, use it directly
-			lookupHash = GetHash(key)
-			targetHash = key
-			// Try to find the full labeled version in links
-			for _, h := range leaf.Links {
-				if h == key || GetHash(h) == key {
-					targetHash = h
-					lookupHash = GetHash(h)
-					break
-				}
-			}
-		}
-
-		if lookupHash == "" {
-			return nil, fmt.Errorf("unable to find hash for key %s", key)
-		}
-
-		index, exists := leaf.MerkleTree.GetIndexForKey(lookupHash)
+		index, exists := leaf.MerkleTree.GetIndexForKey(key)
 		if !exists {
-			return nil, fmt.Errorf("unable to find index for hash %s", lookupHash)
+			return nil, fmt.Errorf("unable to find index for hash %s", key)
 		}
 
 		branch := &ClassicTreeBranch{
-			Leaf:  targetHash,
+			Leaf:  key,
 			Proof: leaf.MerkleTree.Proofs[index],
 		}
 
@@ -435,8 +313,7 @@ func (leaf *DagLeaf) GetBranch(key string) (*ClassicTreeBranch, error) {
 }
 
 func (leaf *DagLeaf) VerifyBranch(branch *ClassicTreeBranch) error {
-	hash := GetHash(branch.Leaf)
-	block := merkle_tree.CreateLeaf(hash)
+	block := merkle_tree.CreateLeaf(branch.Leaf)
 
 	err := merkletree.Verify(block, branch.Proof, leaf.ClassicMerkleRoot, nil)
 	if err != nil {
@@ -446,8 +323,7 @@ func (leaf *DagLeaf) VerifyBranch(branch *ClassicTreeBranch) error {
 	return nil
 }
 
-// VerifyChildrenAgainstMerkleRoot verifies that the ClassicMerkleRoot matches the actual children
-// This should be called when we have all children present (len(Links) == CurrentLinkCount)
+// VerifyChildrenAgainstMerkleRoot checks ClassicMerkleRoot against actual children
 func (leaf *DagLeaf) VerifyChildrenAgainstMerkleRoot(dag *Dag) error {
 	// Skip if no children
 	if leaf.CurrentLinkCount == 0 {
@@ -463,7 +339,7 @@ func (leaf *DagLeaf) VerifyChildrenAgainstMerkleRoot(dag *Dag) error {
 	if leaf.CurrentLinkCount == 1 {
 		var childHash string
 		for _, link := range leaf.Links {
-			childHash = GetHash(link)
+			childHash = link
 			break
 		}
 
@@ -480,7 +356,7 @@ func (leaf *DagLeaf) VerifyChildrenAgainstMerkleRoot(dag *Dag) error {
 	// Case 2: Multiple children - rebuild the merkle tree and compare roots
 	builder := merkle_tree.CreateTree()
 	for _, link := range leaf.Links {
-		hash := GetHash(link)
+		hash := link
 		builder.AddLeaf(hash, hash)
 	}
 
@@ -498,7 +374,7 @@ func (leaf *DagLeaf) VerifyChildrenAgainstMerkleRoot(dag *Dag) error {
 }
 
 func (leaf *DagLeaf) VerifyLeaf() error {
-	additionalData := sortMapByKeys(leaf.AdditionalData)
+	additionalData := SortMapByKeys(leaf.AdditionalData)
 
 	merkleRoot := leaf.ClassicMerkleRoot
 	if len(leaf.ClassicMerkleRoot) <= 0 {
@@ -511,14 +387,14 @@ func (leaf *DagLeaf) VerifyLeaf() error {
 		MerkleRoot       []byte
 		CurrentLinkCount int
 		ContentHash      []byte
-		AdditionalData   []keyValue
+		AdditionalData   []KeyValue
 	}{
 		ItemName:         leaf.ItemName,
 		Type:             leaf.Type,
 		MerkleRoot:       merkleRoot,
 		CurrentLinkCount: leaf.CurrentLinkCount,
 		ContentHash:      leaf.ContentHash,
-		AdditionalData:   sortMapForVerification(additionalData),
+		AdditionalData:   SortMapForVerification(additionalData),
 	}
 
 	serializedLeafData, err := cbor.Marshal(leafData)
@@ -538,7 +414,7 @@ func (leaf *DagLeaf) VerifyLeaf() error {
 		return err
 	}
 
-	currentCid, err := cid.Decode(GetHash(leaf.Hash))
+	currentCid, err := cid.Decode(leaf.Hash)
 	if err != nil {
 		return err
 	}
@@ -552,7 +428,7 @@ func (leaf *DagLeaf) VerifyLeaf() error {
 }
 
 func (leaf *DagLeaf) VerifyRootLeaf(dag *Dag) error {
-	additionalData := sortMapByKeys(leaf.AdditionalData)
+	additionalData := SortMapByKeys(leaf.AdditionalData)
 
 	if len(leaf.ClassicMerkleRoot) <= 0 {
 		leaf.ClassicMerkleRoot = []byte{}
@@ -582,21 +458,17 @@ func (leaf *DagLeaf) VerifyRootLeaf(dag *Dag) error {
 			}
 		}
 
-		rootHash := GetHash(leaf.Hash)
+		rootHash := leaf.Hash
 		var childrenDagSize int64
 		for _, dagLeaf := range dag.Leafs {
-			if GetHash(dagLeaf.Hash) == rootHash {
+			if dagLeaf.Hash == rootHash {
 				continue
 			}
-
-			bareHash := GetHash(dagLeaf.Hash)
 
 			var linkHashes []string
 			if len(dagLeaf.Links) > 0 {
 				linkHashes = make([]string, 0, len(dagLeaf.Links))
-				for _, linkHash := range dagLeaf.Links {
-					linkHashes = append(linkHashes, GetHash(linkHash))
-				}
+				linkHashes = append(linkHashes, dagLeaf.Links...)
 				sort.Strings(linkHashes)
 			}
 
@@ -608,28 +480,24 @@ func (leaf *DagLeaf) VerifyRootLeaf(dag *Dag) error {
 				Content           []byte
 				ClassicMerkleRoot []byte
 				CurrentLinkCount  int
-				LatestLabel       string
 				LeafCount         int
 				ContentSize       int64
 				DagSize           int64
 				Links             []string
 				AdditionalData    map[string]string
-				StoredProofs      map[string]*ClassicTreeBranch
 			}{
-				Hash:              bareHash,
+				Hash:              dagLeaf.Hash,
 				ItemName:          dagLeaf.ItemName,
 				Type:              dagLeaf.Type,
 				ContentHash:       dagLeaf.ContentHash,
 				Content:           dagLeaf.Content,
 				ClassicMerkleRoot: dagLeaf.ClassicMerkleRoot,
 				CurrentLinkCount:  dagLeaf.CurrentLinkCount,
-				LatestLabel:       dagLeaf.LatestLabel,
 				LeafCount:         dagLeaf.LeafCount,
 				ContentSize:       dagLeaf.ContentSize,
 				DagSize:           dagLeaf.DagSize,
 				Links:             linkHashes,
-				AdditionalData:    sortMapByKeys(dagLeaf.AdditionalData),
-				StoredProofs:      dagLeaf.Proofs,
+				AdditionalData:    SortMapByKeys(dagLeaf.AdditionalData),
 			}
 
 			serialized, err := cbor.Marshal(data)
@@ -644,23 +512,21 @@ func (leaf *DagLeaf) VerifyRootLeaf(dag *Dag) error {
 			Type             LeafType
 			MerkleRoot       []byte
 			CurrentLinkCount int
-			LatestLabel      string
 			LeafCount        int
 			ContentSize      int64
 			DagSize          int64
 			ContentHash      []byte
-			AdditionalData   []keyValue
+			AdditionalData   []KeyValue
 		}{
 			ItemName:         leaf.ItemName,
 			Type:             leaf.Type,
 			MerkleRoot:       leaf.ClassicMerkleRoot,
 			CurrentLinkCount: leaf.CurrentLinkCount,
-			LatestLabel:      leaf.LatestLabel,
 			LeafCount:        leaf.LeafCount,
 			ContentSize:      leaf.ContentSize,
 			DagSize:          0,
 			ContentHash:      leaf.ContentHash,
-			AdditionalData:   sortMapForVerification(additionalData),
+			AdditionalData:   SortMapForVerification(additionalData),
 		}
 
 		tempSerialized, err := cbor.Marshal(tempLeafData)
@@ -685,23 +551,21 @@ func (leaf *DagLeaf) VerifyRootLeaf(dag *Dag) error {
 		Type             LeafType
 		MerkleRoot       []byte
 		CurrentLinkCount int
-		LatestLabel      string
 		LeafCount        int
 		ContentSize      int64
 		DagSize          int64
 		ContentHash      []byte
-		AdditionalData   []keyValue
+		AdditionalData   []KeyValue
 	}{
 		ItemName:         leaf.ItemName,
 		Type:             leaf.Type,
 		MerkleRoot:       leaf.ClassicMerkleRoot,
 		CurrentLinkCount: leaf.CurrentLinkCount,
-		LatestLabel:      leaf.LatestLabel,
 		LeafCount:        leaf.LeafCount,
 		ContentSize:      leaf.ContentSize,
 		DagSize:          leaf.DagSize,
 		ContentHash:      leaf.ContentHash,
-		AdditionalData:   sortMapForVerification(additionalData),
+		AdditionalData:   SortMapForVerification(additionalData),
 	}
 
 	serializedLeafData, err := cbor.Marshal(leafData)
@@ -721,7 +585,7 @@ func (leaf *DagLeaf) VerifyRootLeaf(dag *Dag) error {
 		return err
 	}
 
-	currentCid, err := cid.Decode(GetHash(leaf.Hash))
+	currentCid, err := cid.Decode(leaf.Hash)
 	if err != nil {
 		return err
 	}
@@ -756,34 +620,11 @@ func (leaf *DagLeaf) CreateDirectoryLeaf(path string, dag *Dag) error {
 		var content []byte
 
 		if len(leaf.Links) > 0 {
-			var sortedLinks []struct {
-				Label int
-				Link  string
-			}
-
-			for label, link := range leaf.Links {
-				labelNum, err := strconv.Atoi(label)
-				if err != nil {
-					return fmt.Errorf("invalid link label: %s", label)
-				}
-
-				sortedLinks = append(sortedLinks, struct {
-					Label int
-					Link  string
-				}{
-					Label: labelNum,
-					Link:  link,
-				})
-			}
-
-			sort.Slice(sortedLinks, func(i, j int) bool {
-				return sortedLinks[i].Label < sortedLinks[j].Label
-			})
-
-			for _, item := range sortedLinks {
-				childLeaf := dag.Leafs[item.Link]
+			// Links are already sorted, iterate directly
+			for _, link := range leaf.Links {
+				childLeaf := dag.Leafs[link]
 				if childLeaf == nil {
-					return fmt.Errorf("invalid link: %s", item.Link)
+					return fmt.Errorf("invalid link: %s", link)
 				}
 
 				content = append(content, childLeaf.Content...)
@@ -803,40 +644,15 @@ func (leaf *DagLeaf) CreateDirectoryLeaf(path string, dag *Dag) error {
 
 func (leaf *DagLeaf) HasLink(hash string) bool {
 	for _, link := range leaf.Links {
-		if HasLabel(hash) {
-			if HasLabel(link) {
-				if link == hash {
-					return true
-				}
-			} else {
-				if link == GetHash(hash) {
-					return true
-				}
-			}
-		} else {
-			if HasLabel(link) {
-				if GetHash(link) == hash {
-					return true
-				}
-			} else {
-				if GetHash(link) == GetHash(hash) {
-					return true
-				}
-			}
+		if link == hash {
+			return true
 		}
 	}
-
 	return false
 }
 
 func (leaf *DagLeaf) AddLink(hash string) {
-	label := GetLabel(hash)
-
-	if label == "" {
-		fmt.Println("This hash does not have a label")
-	}
-
-	leaf.Links[label] = hash
+	leaf.Links = append(leaf.Links, hash)
 }
 
 func (leaf *DagLeaf) Clone() *DagLeaf {
@@ -848,20 +664,17 @@ func (leaf *DagLeaf) Clone() *DagLeaf {
 		ContentHash:       leaf.ContentHash,
 		ClassicMerkleRoot: leaf.ClassicMerkleRoot,
 		CurrentLinkCount:  leaf.CurrentLinkCount,
-		LatestLabel:       leaf.LatestLabel,
 		LeafCount:         leaf.LeafCount,
 		ContentSize:       leaf.ContentSize,
 		DagSize:           leaf.DagSize,
 		ParentHash:        leaf.ParentHash,
-		Links:             make(map[string]string),
+		Links:             make([]string, 0, len(leaf.Links)),
 		AdditionalData:    make(map[string]string),
 		Proofs:            make(map[string]*ClassicTreeBranch),
 	}
 
-	// Deep copy maps
-	for k, v := range leaf.Links {
-		cloned.Links[k] = v
-	}
+	// Deep copy slices and maps
+	cloned.Links = append(cloned.Links, leaf.Links...)
 	for k, v := range leaf.AdditionalData {
 		cloned.AdditionalData[k] = v
 	}
@@ -877,100 +690,59 @@ func (leaf *DagLeaf) Clone() *DagLeaf {
 	return cloned
 }
 
-func (leaf *DagLeaf) SetLabel(label string) {
-	leaf.Hash = label + ":" + leaf.Hash
-}
-
-func HasLabel(hash string) bool {
-	if GetLabel(hash) != "" {
-		return true
-	} else {
-		return false
-	}
-}
-
-func GetHash(hash string) string {
-	parts := strings.Split(hash, ":")
-
-	if len(parts) != 2 {
-		return hash
+// EstimateSize returns approximate serialized size without full CBOR encoding
+func (leaf *DagLeaf) EstimateSize() int {
+	if leaf == nil {
+		return 0
 	}
 
-	return parts[1]
-}
+	size := 0
 
-func GetLabel(hash string) string {
-	parts := strings.Split(hash, ":")
-	if len(parts) != 2 {
-		return ""
+	// Hash (CIDv1 string, typically ~64 bytes)
+	size += len(leaf.Hash)
+
+	// ItemName
+	size += len(leaf.ItemName)
+
+	// Type string (~10 bytes)
+	size += len(string(leaf.Type))
+
+	// Content (actual file/chunk data)
+	size += len(leaf.Content)
+
+	// ContentHash (32 bytes if present)
+	if leaf.ContentHash != nil {
+		size += len(leaf.ContentHash)
 	}
 
-	return parts[0]
-}
-
-// StripLabel removes the "label:" prefix from a hash string
-func StripLabel(hash string) string {
-	parts := strings.Split(hash, ":")
-	if len(parts) < 2 {
-		return hash
-	}
-	return strings.Join(parts[1:], ":")
-}
-
-// ReplaceLabelInLink replaces the label in a child's link hash
-func (leaf *DagLeaf) ReplaceLabelInLink(childHash string, newLabel string) string {
-	// Strip the existing label (if any) to get just the hash
-	bareHash := StripLabel(childHash)
-
-	// Return the hash with the new label
-	return newLabel + ":" + bareHash
-}
-
-func sortMapByKeys(inputMap map[string]string) map[string]string {
-	if inputMap == nil {
-		return map[string]string{}
+	// ClassicMerkleRoot (32 bytes if present)
+	if leaf.ClassicMerkleRoot != nil {
+		size += len(leaf.ClassicMerkleRoot)
 	}
 
-	if len(inputMap) <= 0 {
-		return map[string]string{}
+	// Links (each is a CID string ~64 bytes)
+	size += len(leaf.Links) * 64
+
+	// AdditionalData (key-value pairs)
+	for key, value := range leaf.AdditionalData {
+		size += len(key) + len(value)
 	}
 
-	keys := make([]string, 0, len(inputMap))
-
-	for key := range inputMap {
-		keys = append(keys, key)
+	// Proofs (merkle proofs for children)
+	// Each proof has a path with ~log2(n) siblings, each sibling is 32 bytes
+	for _, proof := range leaf.Proofs {
+		if proof != nil && proof.Proof != nil {
+			// Estimate ~10 siblings per proof path (covers up to 1024 children)
+			size += 10 * 32
+		}
 	}
 
-	sort.Strings(keys)
+	// Integer fields (CurrentLinkCount, LeafCount, ContentSize, DagSize)
+	// These are variable-length encoded but estimate ~8 bytes each
+	size += 32
 
-	sortedMap := make(map[string]string)
-	for _, key := range keys {
-		sortedMap[key] = inputMap[key]
-	}
+	// Struct overhead and CBOR encoding overhead (~100 bytes)
+	size += 100
 
-	return sortedMap
-}
-
-type keyValue struct {
-	Key   string
-	Value string
-}
-
-func sortMapForVerification(inputMap map[string]string) []keyValue {
-	if inputMap == nil {
-		return nil
-	}
-
-	keys := make([]string, 0, len(inputMap))
-	for key := range inputMap {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-
-	sortedPairs := make([]keyValue, 0, len(keys))
-	for _, key := range keys {
-		sortedPairs = append(sortedPairs, keyValue{Key: key, Value: inputMap[key]})
-	}
-
-	return sortedPairs
+	return size
 }

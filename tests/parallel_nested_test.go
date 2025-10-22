@@ -1,9 +1,11 @@
-package dag
+package tests
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/HORNET-Storage/Scionic-Merkle-Tree/dag"
 )
 
 // TestNestedParallelDeterminism tests with nested directories
@@ -35,8 +37,8 @@ func TestNestedParallelDeterminism(t *testing.T) {
 	}
 
 	// Build DAG sequentially
-	sequentialConfig := DefaultConfig()
-	sequentialDAG, err := CreateDagWithConfig(tmpDir, sequentialConfig)
+	sequentialConfig := dag.DefaultConfig()
+	sequentialDAG, err := dag.CreateDagWithConfig(tmpDir, sequentialConfig)
 	if err != nil {
 		t.Fatalf("Sequential DAG creation failed: %v", err)
 	}
@@ -45,14 +47,14 @@ func TestNestedParallelDeterminism(t *testing.T) {
 	t.Logf("Sequential DAG leaves (%d):", len(sequentialDAG.Leafs))
 	for label, leaf := range sequentialDAG.Leafs {
 		t.Logf("  %s: type=%s, name=%s, links=%d", label, leaf.Type, leaf.ItemName, len(leaf.Links))
-		for linkLabel, linkHash := range leaf.Links {
-			t.Logf("    -> %s: %s", linkLabel, linkHash)
+		for i, linkHash := range leaf.Links {
+			t.Logf("    -> [%d]: %s", i, linkHash)
 		}
 	}
 
 	// Build DAG in parallel
-	parallelConfig := ParallelConfigWithWorkers(2)
-	parallelDAG, err := CreateDagWithConfig(tmpDir, parallelConfig)
+	parallelConfig := dag.ParallelConfigWithWorkers(2)
+	parallelDAG, err := dag.CreateDagWithConfig(tmpDir, parallelConfig)
 	if err != nil {
 		t.Fatalf("Parallel DAG creation failed: %v", err)
 	}
@@ -61,8 +63,8 @@ func TestNestedParallelDeterminism(t *testing.T) {
 	t.Logf("Parallel DAG leaves (%d):", len(parallelDAG.Leafs))
 	for label, leaf := range parallelDAG.Leafs {
 		t.Logf("  %s: type=%s, name=%s, links=%d", label, leaf.Type, leaf.ItemName, len(leaf.Links))
-		for linkLabel, linkHash := range leaf.Links {
-			t.Logf("    -> %s: %s", linkLabel, linkHash)
+		for i, linkHash := range leaf.Links {
+			t.Logf("    -> [%d]: %s", i, linkHash)
 		}
 	}
 

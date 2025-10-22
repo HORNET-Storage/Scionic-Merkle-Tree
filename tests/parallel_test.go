@@ -1,9 +1,11 @@
-package dag
+package tests
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/HORNET-Storage/Scionic-Merkle-Tree/dag"
 )
 
 // TestParallelDeterminism verifies that parallel and sequential DAG building
@@ -48,15 +50,15 @@ func TestParallelDeterminism(t *testing.T) {
 	}
 
 	// Build DAG sequentially
-	sequentialConfig := DefaultConfig()
-	sequentialDAG, err := CreateDagWithConfig(tmpDir, sequentialConfig)
+	sequentialConfig := dag.DefaultConfig()
+	sequentialDAG, err := dag.CreateDagWithConfig(tmpDir, sequentialConfig)
 	if err != nil {
 		t.Fatalf("Sequential DAG creation failed: %v", err)
 	}
 
 	// Build DAG in parallel (with 2 workers)
-	parallelConfig := ParallelConfigWithWorkers(2)
-	parallelDAG, err := CreateDagWithConfig(tmpDir, parallelConfig)
+	parallelConfig := dag.ParallelConfigWithWorkers(2)
+	parallelDAG, err := dag.CreateDagWithConfig(tmpDir, parallelConfig)
 	if err != nil {
 		t.Fatalf("Parallel DAG creation failed: %v", err)
 	}
@@ -101,18 +103,18 @@ func TestParallelDeterminism(t *testing.T) {
 				label, len(seqLeaf.Links), len(parLeaf.Links))
 		}
 
-		// Compare links
-		for linkLabel, seqHash := range seqLeaf.Links {
-			parHash, exists := parLeaf.Links[linkLabel]
-			if !exists {
-				t.Errorf("Link %s exists in sequential leaf %s but not in parallel",
-					linkLabel, label)
+		// Compare links (Links is now an array)
+		for i, seqHash := range seqLeaf.Links {
+			if i >= len(parLeaf.Links) {
+				t.Errorf("Link at index %d exists in sequential leaf %s but not in parallel",
+					i, label)
 				continue
 			}
+			parHash := parLeaf.Links[i]
 
 			if seqHash != parHash {
-				t.Errorf("Link hash mismatch for label %s, link %s:\nSequential: %s\nParallel:   %s",
-					label, linkLabel, seqHash, parHash)
+				t.Errorf("Link hash mismatch for label %s, link %d:\nSequential: %s\nParallel:   %s",
+					label, i, seqHash, parHash)
 			}
 		}
 	}
@@ -137,14 +139,14 @@ func TestParallelConsistency(t *testing.T) {
 		}
 	}
 
-	config := ParallelConfigWithWorkers(4)
+	config := dag.ParallelConfigWithWorkers(4)
 
 	// Build DAG multiple times
 	const iterations = 5
 	var rootHashes []string
 
 	for i := 0; i < iterations; i++ {
-		dag, err := CreateDagWithConfig(tmpDir, config)
+		dag, err := dag.CreateDagWithConfig(tmpDir, config)
 		if err != nil {
 			t.Fatalf("Parallel DAG creation failed (iteration %d): %v", i, err)
 		}
@@ -184,8 +186,8 @@ func TestParallelWithDifferentWorkerCounts(t *testing.T) {
 	var rootHashes []string
 
 	for _, workers := range workerCounts {
-		config := ParallelConfigWithWorkers(workers)
-		dag, err := CreateDagWithConfig(tmpDir, config)
+		config := dag.ParallelConfigWithWorkers(workers)
+		dag, err := dag.CreateDagWithConfig(tmpDir, config)
 		if err != nil {
 			t.Fatalf("Parallel DAG creation failed (workers=%d): %v", workers, err)
 		}

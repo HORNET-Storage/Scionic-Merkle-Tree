@@ -1,4 +1,4 @@
-package dag
+package tests
 
 import (
 	"bytes"
@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/HORNET-Storage/Scionic-Merkle-Tree/dag"
 )
 
 func TestOutOfRangeLeafRequests(t *testing.T) {
@@ -28,32 +30,29 @@ func TestOutOfRangeLeafRequests(t *testing.T) {
 		}
 	}
 
-	dag, err := CreateDag(tmpDir, false)
+	dag, err := dag.CreateDag(tmpDir, false)
 	if err != nil {
 		t.Fatalf("Failed to create DAG: %v", err)
 	}
 
 	tests := []struct {
-		name  string
-		start int
-		end   int
+		name       string
+		leafHashes []string
 	}{
-		{"beyond_size", 10, 15},
-		{"negative_start", -1, 3},
-		{"negative_end", 0, -1},
-		{"start_greater_than_end", 3, 2},
-		{"extremely_large", 1000000, 1000001},
+		{"empty_array", []string{}},
+		{"invalid_hash", []string{"invalid_hash_that_doesnt_exist"}},
+		{"nonexistent_hash", []string{"bafyreiabc123doesnotexist"}},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			partial, err := dag.GetPartial(tt.start, tt.end)
+			partial, err := dag.GetPartial(tt.leafHashes, true)
 			if err != nil {
-				return // Expected for invalid ranges
+				return // Expected for invalid hashes
 			}
 			// If we got a partial DAG, verify it's valid
 			if err := partial.Verify(); err != nil {
-				t.Errorf("Invalid partial DAG returned for range %d-%d: %v", tt.start, tt.end, err)
+				t.Errorf("Invalid partial DAG returned for hashes %v: %v", tt.leafHashes, err)
 			}
 		})
 	}
@@ -86,12 +85,12 @@ func TestSingleFileScenarios(t *testing.T) {
 		},
 		{
 			name:     "exact_chunk_size",
-			size:     ChunkSize,
+			size:     dag.ChunkSize,
 			filename: "exact.txt",
 		},
 		{
 			name:     "larger_than_chunk",
-			size:     ChunkSize * 2,
+			size:     dag.ChunkSize * 2,
 			filename: "large.txt",
 		},
 		{
@@ -118,22 +117,22 @@ func TestSingleFileScenarios(t *testing.T) {
 			}
 
 			// Create DAG from single file
-			dag, err := CreateDag(filePath, false)
+			d, err := dag.CreateDag(filePath, false)
 			if err != nil {
 				t.Fatalf("Failed to create DAG: %v", err)
 			}
 
 			// Verify DAG
-			if err := dag.Verify(); err != nil {
+			if err := d.Verify(); err != nil {
 				t.Errorf("DAG verification failed: %v", err)
 			}
 
 			// For files larger than chunk size, verify chunking
-			if tt.size > ChunkSize {
-				expectedChunks := (tt.size + ChunkSize - 1) / ChunkSize
+			if tt.size > dag.ChunkSize {
+				expectedChunks := (tt.size + dag.ChunkSize - 1) / dag.ChunkSize
 				var chunkCount int
-				for _, leaf := range dag.Leafs {
-					if leaf.Type == ChunkLeafType {
+				for _, leaf := range d.Leafs {
+					if leaf.Type == dag.ChunkLeafType {
 						chunkCount++
 					}
 				}
@@ -143,13 +142,13 @@ func TestSingleFileScenarios(t *testing.T) {
 			}
 
 			// For single file DAGs, verify content
-			rootLeaf := dag.Leafs[dag.Root]
+			rootLeaf := d.Leafs[d.Root]
 			if rootLeaf == nil {
 				t.Fatal("Could not find root leaf")
 			}
 
 			// Get and verify the content
-			recreated, err := dag.GetContentFromLeaf(rootLeaf)
+			recreated, err := d.GetContentFromLeaf(rootLeaf)
 			if err != nil {
 				t.Fatalf("Failed to get content from leaf: %v", err)
 			}
@@ -200,7 +199,7 @@ func TestInvalidPaths(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := CreateDag(tt.path, false)
+			_, err := dag.CreateDag(tt.path, false)
 			if err == nil {
 				t.Error("Expected error for invalid path, got nil")
 			}
@@ -210,55 +209,62 @@ func TestInvalidPaths(t *testing.T) {
 
 func TestBrokenDags(t *testing.T) {
 	// Create a valid DAG with known structure
-	dagBuilder := CreateDagBuilder()
+	dagBuilder := dag.CreateDagBuilder()
 
 	// Create a file leaf
-	fileBuilder := CreateDagLeafBuilder("test.txt")
-	fileBuilder.SetType(FileLeafType)
+	fileBuilder := dag.CreateDagLeafBuilder("test.txt")
+	fileBuilder.SetType(dag.FileLeafType)
 	fileBuilder.SetData([]byte("test content"))
 	fileLeaf, err := fileBuilder.BuildLeaf(nil)
 	if err != nil {
 		t.Fatalf("Failed to build file leaf: %v", err)
 	}
-	fileLeaf.SetLabel("1")
 	dagBuilder.AddLeaf(fileLeaf, nil)
 
 	// Create a directory with the file
-	dirBuilder := CreateDagLeafBuilder("testdir")
-	dirBuilder.SetType(DirectoryLeafType)
-	dirBuilder.AddLink("1", fileLeaf.Hash)
+	dirBuilder := dag.CreateDagLeafBuilder("testdir")
+	dirBuilder.SetType(dag.DirectoryLeafType)
+	dirBuilder.AddLink(fileLeaf.Hash)
 	dirLeaf, err := dirBuilder.BuildRootLeaf(dagBuilder, nil)
 	if err != nil {
 		t.Fatalf("Failed to build directory leaf: %v", err)
 	}
 	dagBuilder.AddLeaf(dirLeaf, nil)
 
-	dag := dagBuilder.BuildDag(dirLeaf.Hash)
+	d := dagBuilder.BuildDag(dirLeaf.Hash)
 
 	t.Run("missing_leaf", func(t *testing.T) {
-		brokenDag := &Dag{
-			Root:  dag.Root,
-			Leafs: make(map[string]*DagLeaf),
+		brokenDag := &dag.Dag{
+			Root:  d.Root,
+			Leafs: make(map[string]*dag.DagLeaf),
 		}
-		// Only copy the root leaf
-		brokenDag.Leafs[dag.Root] = dag.Leafs[dag.Root].Clone()
+		// Copy the root leaf but set LeafCount to match actual leaves
+		// This makes it appear as a "full" DAG that's missing data
+		rootCopy := d.Leafs[d.Root].Clone()
+		rootCopy.LeafCount = 1 // Make it think it's complete with just the root
+		brokenDag.Leafs[d.Root] = rootCopy
+
+		t.Logf("Broken DAG: %d leaves, root.LeafCount=%d, IsPartial=%v",
+			len(brokenDag.Leafs), brokenDag.Leafs[brokenDag.Root].LeafCount, brokenDag.IsPartial())
 
 		if err := brokenDag.Verify(); err == nil {
 			t.Error("Expected verification to fail for DAG with missing leaf")
+		} else {
+			t.Logf("Verification correctly failed: %v", err)
 		}
 	})
 
 	t.Run("corrupted_content", func(t *testing.T) {
-		brokenDag := &Dag{
-			Root:  dag.Root,
-			Leafs: make(map[string]*DagLeaf),
+		brokenDag := &dag.Dag{
+			Root:  d.Root,
+			Leafs: make(map[string]*dag.DagLeaf),
 		}
 		// Copy all leaves but corrupt file content
-		for hash, leaf := range dag.Leafs {
+		for hash, leaf := range d.Leafs {
 			leafCopy := leaf.Clone()
-			if leaf.Type == FileLeafType {
+			if leaf.Type == dag.FileLeafType {
 				// Create a new leaf with corrupted content
-				builder := CreateDagLeafBuilder(leaf.ItemName)
+				builder := dag.CreateDagLeafBuilder(leaf.ItemName)
 				builder.SetType(leaf.Type)
 				builder.SetData(append(leaf.Content, []byte("corrupted")...))
 				corruptedLeaf, _ := builder.BuildLeaf(nil)
@@ -274,18 +280,18 @@ func TestBrokenDags(t *testing.T) {
 	})
 
 	t.Run("invalid_merkle_proof", func(t *testing.T) {
-		brokenDag := &Dag{
-			Root:  dag.Root,
-			Leafs: make(map[string]*DagLeaf),
+		brokenDag := &dag.Dag{
+			Root:  d.Root,
+			Leafs: make(map[string]*dag.DagLeaf),
 		}
 		// Copy all leaves but corrupt merkle root
-		for hash, leaf := range dag.Leafs {
+		for hash, leaf := range d.Leafs {
 			leafCopy := leaf.Clone()
 			if len(leafCopy.ClassicMerkleRoot) > 0 {
 				// Create a different merkle root by changing the content
-				builder := CreateDagLeafBuilder(leaf.ItemName)
+				builder := dag.CreateDagLeafBuilder(leaf.ItemName)
 				builder.SetType(leaf.Type)
-				builder.AddLink("invalid", "invalid:hash")
+				builder.AddLink("invalid_hash")
 				corruptedLeaf, _ := builder.BuildLeaf(nil)
 				leafCopy.ClassicMerkleRoot = corruptedLeaf.ClassicMerkleRoot
 			}
@@ -297,18 +303,18 @@ func TestBrokenDags(t *testing.T) {
 	})
 
 	t.Run("broken_parent_child", func(t *testing.T) {
-		brokenDag := &Dag{
-			Root:  dag.Root,
-			Leafs: make(map[string]*DagLeaf),
+		brokenDag := &dag.Dag{
+			Root:  d.Root,
+			Leafs: make(map[string]*dag.DagLeaf),
 		}
 		// Copy all leaves but modify parent-child relationship
-		for hash, leaf := range dag.Leafs {
+		for hash, leaf := range d.Leafs {
 			leafCopy := leaf.Clone()
 			if len(leafCopy.Links) > 0 {
 				// Add invalid link while preserving CurrentLinkCount
-				builder := CreateDagLeafBuilder(leaf.ItemName)
+				builder := dag.CreateDagLeafBuilder(leaf.ItemName)
 				builder.SetType(leaf.Type)
-				builder.AddLink("invalid", "invalid:hash")
+				builder.AddLink("invalid_hash")
 				corruptedLeaf, _ := builder.BuildLeaf(nil)
 				leafCopy.Links = corruptedLeaf.Links
 				// CurrentLinkCount stays the same as it's part of the hash

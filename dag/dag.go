@@ -13,7 +13,6 @@ import (
 	"time"
 
 	merkle_tree "github.com/HORNET-Storage/Scionic-Merkle-Tree/tree"
-	cbor "github.com/fxamacker/cbor/v2"
 )
 
 type fileInfoDirEntry struct {
@@ -72,7 +71,6 @@ func CreateDagAdvanced(path string, additionalData map[string]string) (*Dag, err
 	return dag, nil
 }
 
-// CreateDagCustom creates a DAG with custom metadata for each leaf
 func CreateDagCustom(path string, rootAdditionalData map[string]string, processor LeafProcessor) (*Dag, error) {
 	dag, err := createDag(path, rootAdditionalData, processor)
 	if err != nil {
@@ -82,7 +80,6 @@ func CreateDagCustom(path string, rootAdditionalData map[string]string, processo
 	return dag, nil
 }
 
-// CreateDagWithConfig creates a DAG using the provided configuration
 func CreateDagWithConfig(path string, config *DagBuilderConfig) (*Dag, error) {
 	if config == nil {
 		config = DefaultConfig()
@@ -103,10 +100,6 @@ func CreateDagWithConfig(path string, config *DagBuilderConfig) (*Dag, error) {
 
 	dag, err := createDag(path, additionalData, config.Processor)
 	if err != nil {
-		return nil, err
-	}
-
-	if err := dag.RecomputeLabels(); err != nil {
 		return nil, err
 	}
 
@@ -140,23 +133,11 @@ func createDag(path string, additionalData map[string]string, processor LeafProc
 		return nil, err
 	}
 
-	// Recompute labels on all children
-	if err := dag.RecomputeLabels(leaf); err != nil {
-		return nil, err
-	}
-
 	rootBuilder := CreateDagLeafBuilder(leaf.ItemName)
 	rootBuilder.SetType(leaf.Type)
 
-	// Add links using the recomputed labels
-	for _, oldLinkHash := range leaf.Links {
-		linkBareHash := StripLabel(oldLinkHash)
-		for hash := range dag.Leafs {
-			if StripLabel(hash) == linkBareHash {
-				rootBuilder.AddLink(GetLabel(hash), linkBareHash)
-				break
-			}
-		}
+	for _, linkHash := range leaf.Links {
+		rootBuilder.AddLink(linkHash)
 	}
 
 	if leaf.Content != nil {
@@ -202,24 +183,11 @@ func createDagParallel(path string, additionalData map[string]string, processor 
 		return nil, err
 	}
 
-	// Recompute labels on all children BEFORE building the root
-	if err := dag.RecomputeLabels(leaf); err != nil {
-		return nil, err
-	}
-
 	rootBuilder := CreateDagLeafBuilder(leaf.ItemName)
 	rootBuilder.SetType(leaf.Type)
 
-	// Add links using the recomputed labels
-	for _, oldLinkHash := range leaf.Links {
-		linkBareHash := StripLabel(oldLinkHash)
-		for hash := range dag.Leafs {
-			if StripLabel(hash) == linkBareHash {
-				newLabel := GetLabel(hash)
-				rootBuilder.AddLink(newLabel, linkBareHash)
-				break
-			}
-		}
+	for _, linkHash := range leaf.Links {
+		rootBuilder.AddLink(linkHash)
 	}
 
 	if leaf.Content != nil {
@@ -243,12 +211,10 @@ func processEntry(entry fs.DirEntry, fullPath string, path *string, dag *DagBuil
 	var result *DagLeaf
 	var err error
 
-	entryPath := filepath.Join(*path, entry.Name())
-
 	if entry.IsDir() {
-		result, err = processDirectory(entry, entryPath, path, dag, false, nil, processor)
+		result, err = processDirectory(entry, fullPath, path, dag, false, nil, processor)
 	} else {
-		result, err = processFile(entry, entryPath, path, dag, false, nil, processor)
+		result, err = processFile(entry, fullPath, path, dag, false, nil, processor)
 	}
 
 	if err != nil {
@@ -290,16 +256,13 @@ func processDirectory(entry fs.DirEntry, fullPath string, path *string, dag *Dag
 
 	var result *DagLeaf
 
-	// Use simple sequential labels (0, 1, 2...) - will be replaced by RecomputeLabels()
-	for i, childEntry := range entries {
+	for _, childEntry := range entries {
 		leaf, err := processEntry(childEntry, filepath.Join(fullPath, childEntry.Name()), &fullPath, dag, processor)
 		if err != nil {
 			return nil, err
 		}
 
-		tempLabel := strconv.Itoa(i)
-		builder.AddLink(tempLabel, leaf.Hash)
-		leaf.SetLabel(tempLabel)
+		builder.AddLink(leaf.Hash)
 		dag.AddLeaf(leaf, nil)
 	}
 
@@ -352,23 +315,20 @@ func processFile(entry fs.DirEntry, fullPath string, path *string, dag *DagBuild
 		if len(fileChunks) == 1 {
 			builder.SetData(fileChunks[0])
 		} else {
-			// Use simple sequential labels for chunks - will be replaced by RecomputeLabels()
 			for i, chunk := range fileChunks {
+				// Use path-based naming for chunks to maintain compatibility
 				chunkEntryPath := filepath.Join(relPath, strconv.Itoa(i))
 				chunkBuilder := CreateDagLeafBuilder(chunkEntryPath)
 
 				chunkBuilder.SetType(ChunkLeafType)
 				chunkBuilder.SetData(chunk)
 
-				// Chunks don't get custom metadata
 				chunkLeaf, err := chunkBuilder.BuildLeaf(nil)
 				if err != nil {
 					return nil, err
 				}
 
-				tempLabel := strconv.Itoa(i)
-				builder.AddLink(tempLabel, chunkLeaf.Hash)
-				chunkLeaf.SetLabel(tempLabel)
+				builder.AddLink(chunkLeaf.Hash)
 				dag.AddLeaf(chunkLeaf, nil)
 			}
 		}
@@ -381,6 +341,7 @@ func processFile(entry fs.DirEntry, fullPath string, path *string, dag *DagBuild
 
 	return result, nil
 }
+
 func chunkFile(fileData []byte, chunkSize int) [][]byte {
 	var chunks [][]byte
 	fileSize := len(fileData)
@@ -455,15 +416,13 @@ func processDirectoryParallel(entry fs.DirEntry, fullPath string, path *string, 
 
 	// If only one entry, process sequentially
 	if len(entries) <= 1 {
-		for i, childEntry := range entries {
+		for _, childEntry := range entries {
 			leaf, err := processEntryParallel(childEntry, filepath.Join(fullPath, childEntry.Name()), &fullPath, dag, processor, config)
 			if err != nil {
 				return nil, err
 			}
 
-			tempLabel := strconv.Itoa(i)
-			builder.AddLink(tempLabel, leaf.Hash)
-			leaf.SetLabel(tempLabel)
+			builder.AddLink(leaf.Hash)
 			dag.AddLeafSafe(leaf, nil)
 		}
 
@@ -528,14 +487,12 @@ func processDirectoryParallel(entry fs.DirEntry, fullPath string, path *string, 
 	})
 
 	// Apply results in sorted order
-	for i, result := range resultSlice {
+	for _, result := range resultSlice {
 		if result.err != nil {
 			return nil, result.err
 		}
 
-		tempLabel := strconv.Itoa(i)
-		builder.AddLink(tempLabel, result.leaf.Hash)
-		result.leaf.SetLabel(tempLabel)
+		builder.AddLink(result.leaf.Hash)
 		dag.AddLeafSafe(result.leaf, nil)
 	}
 
@@ -552,12 +509,10 @@ func processEntryParallel(entry fs.DirEntry, fullPath string, path *string, dag 
 	var result *DagLeaf
 	var err error
 
-	entryPath := filepath.Join(*path, entry.Name())
-
 	if entry.IsDir() {
-		result, err = processDirectoryParallel(entry, entryPath, path, dag, false, nil, processor, config)
+		result, err = processDirectoryParallel(entry, fullPath, path, dag, false, nil, processor, config)
 	} else {
-		result, err = processFileParallel(entry, entryPath, path, dag, false, nil, processor, config)
+		result, err = processFileParallel(entry, fullPath, path, dag, false, nil, processor, config)
 	}
 
 	if err != nil {
@@ -605,8 +560,10 @@ func processFileParallel(entry fs.DirEntry, fullPath string, path *string, dag *
 			builder.SetData(fileChunks[0])
 		} else {
 			for i, chunk := range fileChunks {
-				chunkEntryPath := filepath.Join(relPath, strconv.Itoa(i))
-				chunkBuilder := CreateDagLeafBuilder(chunkEntryPath)
+				// Use simple numeric string as ItemName for chunks
+				// This makes alphabetical sorting work naturally: "0", "1", "2", ...
+				chunkItemName := strconv.Itoa(i)
+				chunkBuilder := CreateDagLeafBuilder(chunkItemName)
 				chunkBuilder.SetType(ChunkLeafType)
 				chunkBuilder.SetData(chunk)
 
@@ -615,9 +572,7 @@ func processFileParallel(entry fs.DirEntry, fullPath string, path *string, dag *
 					return nil, err
 				}
 
-				tempLabel := strconv.Itoa(i)
-				builder.AddLink(tempLabel, chunkLeaf.Hash)
-				chunkLeaf.SetLabel(tempLabel)
+				builder.AddLink(chunkLeaf.Hash)
 				dag.AddLeafSafe(chunkLeaf, nil)
 			}
 		}
@@ -647,9 +602,8 @@ func (b *DagBuilder) AddLeafSafe(leaf *DagLeaf, parentLeaf *DagLeaf) error {
 // addLeafUnsafe is the internal implementation without locking
 func (b *DagBuilder) addLeafUnsafe(leaf *DagLeaf, parentLeaf *DagLeaf) error {
 	if parentLeaf != nil {
-		label := GetLabel(leaf.Hash)
-		_, exists := parentLeaf.Links[label]
-		if !exists {
+		// Check if link already exists
+		if !parentLeaf.HasLink(leaf.Hash) {
 			parentLeaf.AddLink(leaf.Hash)
 		}
 
@@ -657,8 +611,7 @@ func (b *DagBuilder) addLeafUnsafe(leaf *DagLeaf, parentLeaf *DagLeaf) error {
 		if len(parentLeaf.Links) > 1 {
 			builder := merkle_tree.CreateTree()
 			for _, link := range parentLeaf.Links {
-				hash := GetHash(link)
-				builder.AddLeaf(hash, hash)
+				builder.AddLeaf(link, link)
 			}
 
 			merkleTree, leafMap, err := builder.Build()
@@ -683,121 +636,6 @@ func (b *DagBuilder) BuildDag(root string) *Dag {
 		Leafs: b.Leafs,
 		Root:  root,
 	}
-}
-
-// RecomputeLabels recomputes labels for all leaves in the builder using breadth-first traversal
-func (b *DagBuilder) RecomputeLabels(rootLeaf *DagLeaf) error {
-	labelMapping := make(map[string]string)
-
-	// The root never gets a label
-	rootBareHash := StripLabel(rootLeaf.Hash)
-	labelMapping[rootBareHash] = ""
-
-	// Breadth-first traversal starting from root's children
-	currentLabel := 1
-	queue := []string{}
-	visited := make(map[string]bool)
-
-	childHashes := make([]string, 0, len(rootLeaf.Links))
-	for _, childHashWithLabel := range rootLeaf.Links {
-		childBareHash := StripLabel(childHashWithLabel)
-		childHashes = append(childHashes, childBareHash)
-	}
-	sort.Strings(childHashes)
-
-	for _, childBareHash := range childHashes {
-		if !visited[childBareHash] {
-			visited[childBareHash] = true
-			newLabel := strconv.Itoa(currentLabel)
-			currentLabel++
-			labelMapping[childBareHash] = newLabel
-			queue = append(queue, childBareHash)
-		}
-	}
-
-	// Process remaining nodes
-	for len(queue) > 0 {
-		currentBareHash := queue[0]
-		queue = queue[1:]
-
-		// Find the leaf with this bare hash
-		var currentLeaf *DagLeaf
-		for hash, leaf := range b.Leafs {
-			if StripLabel(hash) == currentBareHash {
-				currentLeaf = leaf
-				break
-			}
-		}
-
-		if currentLeaf == nil {
-			continue
-		}
-
-		// Process all children of this leaf
-		childHashes := make([]string, 0, len(currentLeaf.Links))
-		for _, childHashWithLabel := range currentLeaf.Links {
-			childBareHash := StripLabel(childHashWithLabel)
-			childHashes = append(childHashes, childBareHash)
-		}
-		sort.Strings(childHashes)
-
-		for _, childBareHash := range childHashes {
-			if visited[childBareHash] {
-				continue
-			}
-			visited[childBareHash] = true
-
-			newLabel := strconv.Itoa(currentLabel)
-			currentLabel++
-			labelMapping[childBareHash] = newLabel
-			queue = append(queue, childBareHash)
-		}
-	}
-
-	// Apply the new labels
-	newLeafs := make(map[string]*DagLeaf)
-
-	for oldHash, leaf := range b.Leafs {
-		bareHash := StripLabel(oldHash)
-		newLabel, exists := labelMapping[bareHash]
-		if !exists {
-			return fmt.Errorf("no label mapping found for bare hash %s", bareHash)
-		}
-
-		var newHash string
-		if newLabel == "" {
-			newHash = bareHash
-		} else {
-			newHash = newLabel + ":" + bareHash
-		}
-
-		leaf.Hash = newHash
-
-		// Update links
-		newLinks := make(map[string]string)
-		for _, oldLinkHash := range leaf.Links {
-			linkBareHash := StripLabel(oldLinkHash)
-			newLinkLabel, exists := labelMapping[linkBareHash]
-			if !exists {
-				return fmt.Errorf("no label mapping found for link bare hash %s", linkBareHash)
-			}
-
-			var newLinkHash string
-			if newLinkLabel == "" {
-				newLinkHash = linkBareHash
-			} else {
-				newLinkHash = newLinkLabel + ":" + linkBareHash
-			}
-
-			newLinks[newLinkLabel] = newLinkHash
-		}
-		leaf.Links = newLinks
-
-		newLeafs[newHash] = leaf
-	}
-
-	b.Leafs = newLeafs
-	return nil
 }
 
 // verifyFullDag verifies a complete DAG by checking parent-child relationships
@@ -844,11 +682,42 @@ func (d *Dag) verifyWithProofs() error {
 		return fmt.Errorf("root leaf failed to verify: %w", err)
 	}
 
-	// If root has all children, verify merkle root
+	// If root has all children in the DAG, verify merkle root
 	if len(rootLeaf.Links) == rootLeaf.CurrentLinkCount && rootLeaf.CurrentLinkCount > 0 {
-		if err := rootLeaf.VerifyChildrenAgainstMerkleRoot(d); err != nil {
-			return fmt.Errorf("root leaf merkle root verification failed: %w", err)
+		// Count how many children actually exist in the DAG
+		childrenInDag := 0
+		for _, childHash := range rootLeaf.Links {
+			if _, exists := d.Leafs[childHash]; exists {
+				childrenInDag++
+			}
 		}
+		// Check if we have all children
+		if childrenInDag == rootLeaf.CurrentLinkCount {
+			// All children present, verify merkle root
+			if err := rootLeaf.VerifyChildrenAgainstMerkleRoot(d); err != nil {
+				return fmt.Errorf("root leaf merkle root verification failed: %w", err)
+			}
+		} else if rootLeaf.CurrentLinkCount == 1 {
+			// Single child case: can't use merkle proofs with only one child
+			// The ClassicMerkleRoot should be set to the child's hash directly
+			// If child exists, verify it matches; if not, it will be verified when child arrives
+			if childrenInDag > 0 {
+				// Child exists, verify ClassicMerkleRoot matches child hash
+				childHash := rootLeaf.Links[0]
+				childLeaf := d.Leafs[childHash]
+				if childLeaf != nil {
+					// Verify that ClassicMerkleRoot equals the child's hash
+					if string(rootLeaf.ClassicMerkleRoot) != childHash {
+						return fmt.Errorf("single child verification failed: ClassicMerkleRoot doesn't match child hash")
+					}
+				}
+			}
+			// If child doesn't exist yet, verification will happen when it's added
+		} else if len(rootLeaf.Proofs) == 0 {
+			// Multiple children missing and no proofs - this is a broken DAG
+			return fmt.Errorf("broken DAG: root has %d links but only %d children exist in DAG (no proofs available)", rootLeaf.CurrentLinkCount, childrenInDag)
+		}
+		// Else: children missing but we have proofs - will be verified in loop below
 	}
 
 	// Verify each non-root leaf
@@ -888,9 +757,30 @@ func (d *Dag) verifyWithProofs() error {
 			hasAllChildren := len(parent.Links) == parent.CurrentLinkCount
 
 			if hasAllChildren && parent.CurrentLinkCount > 0 {
-				// If we have all children, rebuild the merkle tree and verify
-				if err := parent.VerifyChildrenAgainstMerkleRoot(d); err != nil {
-					return fmt.Errorf("parent %s merkle root verification failed: %w", parent.Hash, err)
+				// Count how many children actually exist in the DAG
+				childrenInDag := 0
+				for _, childHash := range parent.Links {
+					if _, exists := d.Leafs[childHash]; exists {
+						childrenInDag++
+					}
+				}
+				// Check if we have all children
+				if childrenInDag == parent.CurrentLinkCount {
+					// All children present, verify merkle root
+					if err := parent.VerifyChildrenAgainstMerkleRoot(d); err != nil {
+						return fmt.Errorf("parent %s merkle root verification failed: %w", parent.Hash, err)
+					}
+				} else {
+					// Some children missing - check if we have a proof for the current child
+					if _, hasProof := parent.Proofs[current.Hash]; !hasProof {
+						// No proof for current child - this is a broken DAG
+						return fmt.Errorf("broken DAG: parent %s has %d links but only %d children exist in DAG (no proof for child %s)", parent.Hash, parent.CurrentLinkCount, childrenInDag, current.Hash)
+					}
+					// Have proof for current child, verify it
+					err := parent.VerifyBranch(parent.Proofs[current.Hash])
+					if err != nil {
+						return fmt.Errorf("invalid merkle proof for node %s: %w", current.Hash, err)
+					}
 				}
 			} else if parent.CurrentLinkCount > 1 {
 				// If we don't have all children, we must use stored proofs
@@ -941,50 +831,60 @@ func ReadDag(path string) (*Dag, error) {
 		return nil, fmt.Errorf("could not read file: %w", err)
 	}
 
-	var result Dag
-	if err := cbor.Unmarshal(fileData, &result); err != nil {
+	// Use FromCBOR to properly deserialize through SerializableDag
+	dag, err := FromCBOR(fileData)
+	if err != nil {
 		return nil, fmt.Errorf("could not decode Dag: %w", err)
 	}
 
-	return &result, nil
+	return dag, nil
 }
 
 func (dag *Dag) GetContentFromLeaf(leaf *DagLeaf) ([]byte, error) {
 	var content []byte
 
 	if len(leaf.Links) > 0 {
-		// For chunked files, sort links by label and concatenate content from all chunks
-		var sortedLinks []struct {
-			Label int
-			Link  string
+		// For chunked files, sort chunks by ItemName (which is just "0", "1", "2", ...)
+		// Create a sortable slice of link info
+		type linkInfo struct {
+			hash     string
+			leaf     *DagLeaf
+			itemName string
 		}
 
-		for label, link := range leaf.Links {
-			labelNum, err := strconv.Atoi(label)
-			if err != nil {
-				return nil, fmt.Errorf("invalid link label: %s", label)
+		links := make([]linkInfo, 0, len(leaf.Links))
+		for _, link := range leaf.Links {
+			childLeaf := dag.Leafs[link]
+			if childLeaf == nil {
+				return nil, fmt.Errorf("invalid link: %s", link)
 			}
 
-			sortedLinks = append(sortedLinks, struct {
-				Label int
-				Link  string
-			}{
-				Label: labelNum,
-				Link:  link,
+			links = append(links, linkInfo{
+				hash:     link,
+				leaf:     childLeaf,
+				itemName: childLeaf.ItemName,
 			})
 		}
 
-		sort.Slice(sortedLinks, func(i, j int) bool {
-			return sortedLinks[i].Label < sortedLinks[j].Label
+		// Sort by ItemName (extract numeric part from path-based names like "bundle/0", "bundle/1")
+		sort.Slice(links, func(i, j int) bool {
+			// Extract the basename (last component) from the path
+			baseI := filepath.Base(links[i].itemName)
+			baseJ := filepath.Base(links[j].itemName)
+
+			// Convert to int for proper numeric sorting
+			numI, errI := strconv.Atoi(baseI)
+			numJ, errJ := strconv.Atoi(baseJ)
+			if errI != nil || errJ != nil {
+				// Fallback to string comparison if conversion fails
+				return links[i].itemName < links[j].itemName
+			}
+			return numI < numJ
 		})
 
-		for _, item := range sortedLinks {
-			childLeaf := dag.Leafs[item.Link]
-			if childLeaf == nil {
-				return nil, fmt.Errorf("invalid link: %s", item.Link)
-			}
-
-			content = append(content, childLeaf.Content...)
+		// Concatenate content in sorted order
+		for _, linkInfo := range links {
+			content = append(content, linkInfo.leaf.Content...)
 		}
 	} else if len(leaf.Content) > 0 {
 		// For single-chunk files, return content directly
@@ -997,23 +897,21 @@ func (dag *Dag) GetContentFromLeaf(leaf *DagLeaf) ([]byte, error) {
 func (d *Dag) IterateDag(processLeaf func(leaf *DagLeaf, parent *DagLeaf) error) error {
 	var iterate func(leafHash string, parentHash *string) error
 	iterate = func(leafHash string, parentHash *string) error {
-		bareLeafHash := StripLabel(leafHash)
 		var leaf *DagLeaf
 		for hash, l := range d.Leafs {
-			if StripLabel(hash) == bareLeafHash {
+			if hash == leafHash {
 				leaf = l
 				break
 			}
 		}
 		if leaf == nil {
-			return fmt.Errorf("child is missing when iterating dag (bare hash: %s)", bareLeafHash)
+			return fmt.Errorf("child is missing when iterating dag (hash: %s)", leafHash)
 		}
 
 		var parent *DagLeaf
 		if parentHash != nil {
-			bareParentHash := StripLabel(*parentHash)
 			for hash, l := range d.Leafs {
-				if StripLabel(hash) == bareParentHash {
+				if hash == *parentHash {
 					parent = l
 					break
 				}
@@ -1064,17 +962,17 @@ func (d *Dag) IsPartial() bool {
 // pruneIrrelevantLinks removes links that aren't needed for partial verification
 func (d *Dag) pruneIrrelevantLinks(relevantHashes map[string]bool) {
 	for _, leaf := range d.Leafs {
-		// Create new map for relevant links
-		prunedLinks := make(map[string]string)
+		// Create new array for relevant links
+		prunedLinks := make([]string, 0, len(leaf.Links))
 
 		// Only keep links that are relevant
-		for label, hash := range leaf.Links {
-			if relevantHashes[GetHash(hash)] {
-				prunedLinks[label] = hash
+		for _, hash := range leaf.Links {
+			if relevantHashes[hash] {
+				prunedLinks = append(prunedLinks, hash)
 			}
 		}
 
-		// Only modify the Links map, keep everything else as is
+		// Only modify the Links array, keep everything else as is
 		// since they're part of the leaf's identity
 		leaf.Links = prunedLinks
 	}
@@ -1118,7 +1016,7 @@ func (d *Dag) buildVerificationBranch(leaf *DagLeaf) (*DagBranch, error) {
 			var childHash string
 			for _, h := range parent.Links {
 				if h == current.Hash {
-					childHash = GetHash(h)
+					childHash = h
 					break
 				}
 			}
@@ -1129,8 +1027,7 @@ func (d *Dag) buildVerificationBranch(leaf *DagLeaf) (*DagBranch, error) {
 			// Build merkle tree with all current links
 			builder := merkle_tree.CreateTree()
 			for _, h := range parent.Links {
-				hash := GetHash(h)
-				builder.AddLeaf(hash, hash)
+				builder.AddLeaf(h, h)
 			}
 			merkleTree, _, err := builder.Build()
 			if err != nil {
@@ -1153,7 +1050,6 @@ func (d *Dag) buildVerificationBranch(leaf *DagLeaf) (*DagBranch, error) {
 				Proof: merkleTree.Proofs[index],
 			}
 
-			// Store proof using the hash
 			parentClone.Proofs[current.Hash] = proof
 		}
 
@@ -1197,26 +1093,54 @@ func (d *Dag) addBranchToPartial(branch *DagBranch, partial *Dag) error {
 		}
 	}
 
+	// Now establish the parent-child links along the verification path
+	// The path structure is: [root, ..., parent_of_parent, direct_parent]
+	// We need to:
+	//   1. Link the last path node (direct parent) to the target leaf
+	//   2. Link each path node to the next path node (walking from root down)
+
+	// Link the direct parent (last in path) to the target leaf
+	if len(branch.Path) > 0 {
+		directParentIdx := len(branch.Path) - 1
+		directParent := branch.Path[directParentIdx]
+
+		// Check if this parent should link to the leaf
+		if directParent.HasLink(branch.Leaf.Hash) {
+			if partialNode, exists := partial.Leafs[directParent.Hash]; exists {
+				// Ensure the link exists in the partial node
+				if !partialNode.HasLink(branch.Leaf.Hash) {
+					partialNode.AddLink(branch.Leaf.Hash)
+				}
+			}
+		}
+	}
+
+	// Now link each path node to the next one down the path
+	// Path is [root, intermediate..., direct_parent]
+	// So we walk forward and check if path[i] should link to path[i+1]
+	for i := 0; i < len(branch.Path)-1; i++ {
+		current := branch.Path[i]
+		next := branch.Path[i+1]
+
+		// Check if current should link to next
+		if current.HasLink(next.Hash) {
+			if partialNode, exists := partial.Leafs[current.Hash]; exists {
+				// Ensure the link exists in the partial node
+				if !partialNode.HasLink(next.Hash) {
+					partialNode.AddLink(next.Hash)
+				}
+			}
+		}
+	}
+
 	return nil
 }
 
-// GetPartial returns a new DAG containing only the requested leaves and their verification paths
-func (d *Dag) GetPartial(start, end int) (*Dag, error) {
-	if start == end {
-		return nil, fmt.Errorf("invalid range: indices cannot be the same")
-	}
-
-	if start < 0 || end < 0 {
-		return nil, fmt.Errorf("invalid range: indices cannot be negative")
-	}
-
-	if start > end {
-		return nil, fmt.Errorf("invalid range: start cannot be greater than end")
-	}
-
-	rootLeaf := d.Leafs[d.Root]
-	if start >= rootLeaf.LeafCount || end > rootLeaf.LeafCount {
-		return nil, fmt.Errorf("invalid range: indices cannot be greater than the overall leaf count")
+// GetPartial creates a partial DAG with specified leaves and their verification paths
+// pruneLinks: true = remove unreferenced links (verification), false = keep all links (reconstruction)
+func (d *Dag) GetPartial(leafHashes []string, pruneLinks bool) (*Dag, error) {
+	if len(leafHashes) == 0 {
+		return nil, fmt.Errorf("no leaf hashes provided")
 	}
 
 	partialDag := &Dag{
@@ -1226,30 +1150,25 @@ func (d *Dag) GetPartial(start, end int) (*Dag, error) {
 
 	// Track hashes that are relevant for verification
 	relevantHashes := make(map[string]bool)
-	relevantHashes[GetHash(d.Root)] = true
+	relevantHashes[d.Root] = true
 
-	// Process each requested leaf
-	for i := start; i <= end; i++ {
-		// Find and validate leaf
+	// Process each requested leaf hash
+	for _, requestedHash := range leafHashes {
+		// Find the leaf with this hash
 		var targetLeaf *DagLeaf
-		if i == 0 {
-			targetLeaf = d.Leafs[d.Root]
-		} else {
-			label := strconv.Itoa(i)
-			for _, leaf := range d.Leafs {
-				if GetLabel(leaf.Hash) == label {
-					targetLeaf = leaf
-					break
-				}
+		for hash, leaf := range d.Leafs {
+			if hash == requestedHash {
+				targetLeaf = leaf
+				break
 			}
 		}
 
 		if targetLeaf == nil {
-			continue
+			return nil, fmt.Errorf("leaf not found: %s", requestedHash)
 		}
 
 		// Add target leaf hash to relevant hashes
-		relevantHashes[GetHash(targetLeaf.Hash)] = true
+		relevantHashes[requestedHash] = true
 
 		// Build verification path
 		branch, err := d.buildVerificationBranch(targetLeaf)
@@ -1259,13 +1178,13 @@ func (d *Dag) GetPartial(start, end int) (*Dag, error) {
 
 		// Track hashes from verification path
 		for _, pathNode := range branch.Path {
-			relevantHashes[GetHash(pathNode.Hash)] = true
+			relevantHashes[pathNode.Hash] = true
 		}
 
 		// Track hashes from Merkle proofs
 		for _, proof := range branch.MerkleProofs {
 			// Add the leaf hash
-			relevantHashes[GetHash(proof.Leaf)] = true
+			relevantHashes[proof.Leaf] = true
 			// Add all sibling hashes from the proof
 			for _, sibling := range proof.Proof.Siblings {
 				relevantHashes[string(sibling)] = true
@@ -1279,1190 +1198,127 @@ func (d *Dag) GetPartial(start, end int) (*Dag, error) {
 		}
 	}
 
-	// Prune irrelevant links from the partial DAG
-	partialDag.pruneIrrelevantLinks(relevantHashes)
+	// Optionally prune irrelevant links from the partial DAG
+	if pruneLinks {
+		partialDag.pruneIrrelevantLinks(relevantHashes)
+	}
 
 	return partialDag, nil
 }
 
-// getPartialLeafSequence returns an ordered sequence of leaves for transmission from a partial DAG
-// This is an internal method used by GetLeafSequence when dealing with partial DAGs
-func (d *Dag) getPartialLeafSequence() []*TransmissionPacket {
-	var sequence []*TransmissionPacket
-
-	// Get the root leaf
-	rootLeaf := d.Leafs[d.Root]
-	if rootLeaf == nil {
-		return sequence // Return empty sequence if root leaf is missing
-	}
-
-	// First, build a map of proofs organized by parent hash and child hash
-	// This will allow us to look up the proof for a specific child when creating its packet
-	proofMap := make(map[string]map[string]*ClassicTreeBranch)
-
-	// Populate the proof map from all leaves in the partial DAG
-	for _, leaf := range d.Leafs {
-		if len(leaf.Proofs) > 0 {
-			// Create an entry for this parent if it doesn't exist
-			if _, exists := proofMap[leaf.Hash]; !exists {
-				proofMap[leaf.Hash] = make(map[string]*ClassicTreeBranch)
-			}
-
-			// Add all proofs from this leaf to the map
-			for childHash, proof := range leaf.Proofs {
-				proofMap[leaf.Hash][childHash] = proof
-			}
-		}
-	}
-
-	// Now perform BFS traversal similar to the full DAG method
-	visited := make(map[string]bool)
-
-	// Start with the root
-	rootLeafClone := rootLeaf.Clone()
-
-	// We need to preserve the original links for the root leaf
-	// because they're part of its identity and hash calculation
-	originalLinks := make(map[string]string)
-	for k, v := range rootLeaf.Links {
-		originalLinks[k] = v
-	}
-
-	// Clear links for transmission (they'll be reconstructed on the receiving end)
-	rootLeafClone.Links = make(map[string]string)
-
-	// We need to preserve these fields for verification
-	// but clear proofs for the root packet - they'll be sent with child packets
-	originalMerkleRoot := rootLeafClone.ClassicMerkleRoot
-	originalLatestLabel := rootLeafClone.LatestLabel
-	originalLeafCount := rootLeafClone.LeafCount
-
-	rootLeafClone.Proofs = nil
-
-	// Restore the critical fields
-	rootLeafClone.ClassicMerkleRoot = originalMerkleRoot
-	rootLeafClone.LatestLabel = originalLatestLabel
-	rootLeafClone.LeafCount = originalLeafCount
-
-	rootPacket := &TransmissionPacket{
-		Leaf:       rootLeafClone,
-		ParentHash: "", // Root has no parent
-		Proofs:     make(map[string]*ClassicTreeBranch),
-	}
-	sequence = append(sequence, rootPacket)
-	visited[d.Root] = true
-
-	// Restore the original links for the root leaf in the DAG
-	rootLeaf.Links = originalLinks
-
-	// BFS traversal
-	queue := []string{d.Root}
-	for len(queue) > 0 {
-		current := queue[0]
-		queue = queue[1:]
-
-		currentLeaf := d.Leafs[current]
-
-		// Sort links for deterministic order
-		var sortedLinks []string
-		for _, link := range currentLeaf.Links {
-			sortedLinks = append(sortedLinks, link)
-		}
-		sort.Strings(sortedLinks)
-
-		// Process each child
-		for _, childHash := range sortedLinks {
-			if !visited[childHash] {
-				childLeaf := d.Leafs[childHash]
-				if childLeaf == nil {
-					continue // Skip if child leaf doesn't exist in this partial DAG
-				}
-
-				// Clone the leaf and clear its links for transmission
-				leafClone := childLeaf.Clone()
-				leafClone.Links = make(map[string]string)
-				leafClone.Proofs = nil // Clear proofs from the leaf
-
-				packet := &TransmissionPacket{
-					Leaf:       leafClone,
-					ParentHash: current,
-					Proofs:     make(map[string]*ClassicTreeBranch),
-				}
-
-				// Add the proof for this specific child from the proof map
-				if parentProofs, exists := proofMap[current]; exists {
-					if proof, hasProof := parentProofs[childHash]; hasProof {
-						packet.Proofs[childHash] = proof
-					}
-				}
-
-				sequence = append(sequence, packet)
-				visited[childHash] = true
-				queue = append(queue, childHash)
-			}
-		}
-	}
-
-	return sequence
-}
-
-// GetLeafSequence returns an ordered sequence of leaves for transmission
-// Each packet contains a leaf, its parent hash, and any proofs needed for verification
-func (d *Dag) GetLeafSequence() []*TransmissionPacket {
-	// Check if this is a partial DAG
-	if d.IsPartial() {
-		// Use specialized method for partial DAGs
-		return d.getPartialLeafSequence()
-	}
-
-	// Original implementation for complete DAGs
-	var sequence []*TransmissionPacket
-	visited := make(map[string]bool)
-
-	rootLeaf := d.Leafs[d.Root]
-	if rootLeaf == nil {
-		return sequence
-	}
-
-	totalLeafCount := rootLeaf.LeafCount
-
-	rootLeafClone := rootLeaf.Clone()
-	rootLeafClone.Links = make(map[string]string)
-
-	rootPacket := &TransmissionPacket{
-		Leaf:       rootLeafClone,
-		ParentHash: "",
-		Proofs:     make(map[string]*ClassicTreeBranch),
-	}
-	sequence = append(sequence, rootPacket)
-	visited[d.Root] = true
-
-	queue := []string{d.Root}
-	for len(queue) > 0 && len(sequence) <= totalLeafCount {
-		current := queue[0]
-		queue = queue[1:]
-
-		currentLeaf := d.Leafs[current]
-
-		var sortedLinks []string
-		for _, link := range currentLeaf.Links {
-			sortedLinks = append(sortedLinks, link)
-		}
-		sort.Strings(sortedLinks)
-
-		for _, childHash := range sortedLinks {
-			if !visited[childHash] && len(sequence) <= totalLeafCount {
-				branch, err := d.buildVerificationBranch(d.Leafs[childHash])
-				if err != nil {
-					continue
-				}
-
-				leafClone := d.Leafs[childHash].Clone()
-				leafClone.Links = make(map[string]string)
-
-				packet := &TransmissionPacket{
-					Leaf:       leafClone,
-					ParentHash: current,
-					Proofs:     make(map[string]*ClassicTreeBranch),
-				}
-
-				for _, pathNode := range branch.Path {
-					if pathNode.Proofs != nil {
-						for k, v := range pathNode.Proofs {
-							packet.Proofs[k] = v
-						}
-					}
-				}
-
-				sequence = append(sequence, packet)
-				visited[childHash] = true
-				queue = append(queue, childHash)
-			}
-		}
-	}
-
-	return sequence
-}
-
-// VerifyTransmissionPacket verifies a transmission packet independently
-func (d *Dag) VerifyTransmissionPacket(packet *TransmissionPacket) error {
-	if packet.ParentHash == "" {
-		if err := packet.Leaf.VerifyRootLeaf(nil); err != nil {
-			return fmt.Errorf("transmission packet root leaf verification failed: %w", err)
-		}
+// CalculateLabels populates the Labels map with deterministic label assignments.
+// Each leaf hash (excluding the root) is assigned a numeric label as a string.
+// The root is always label "0" and is not included in the map.
+// This function is deterministic - calling it multiple times on the same DAG
+// will always produce the same label assignments based on DAG traversal order.
+func (d *Dag) CalculateLabels() error {
+	if d.Labels == nil {
+		d.Labels = make(map[string]string)
 	} else {
-		if err := packet.Leaf.VerifyLeaf(); err != nil {
-			return fmt.Errorf("transmission packet leaf verification failed: %w", err)
-		}
-
-		if parent, exists := d.Leafs[packet.ParentHash]; exists && len(parent.Links) > 1 {
-			proof, hasProof := packet.Proofs[packet.Leaf.Hash]
-			if !hasProof {
-				return fmt.Errorf("missing merkle proof for leaf %s in transmission packet", packet.Leaf.Hash)
-			}
-
-			if err := parent.VerifyBranch(proof); err != nil {
-				return fmt.Errorf("invalid merkle proof for leaf %s: %w", packet.Leaf.Hash, err)
-			}
+		// Clear existing labels
+		for k := range d.Labels {
+			delete(d.Labels, k)
 		}
 	}
 
-	return nil
-}
-
-// ApplyTransmissionPacket applies a transmission packet to the DAG
-func (d *Dag) ApplyTransmissionPacket(packet *TransmissionPacket) {
-	d.Leafs[packet.Leaf.Hash] = packet.Leaf
-
-	if packet.ParentHash != "" {
-		if parent, exists := d.Leafs[packet.ParentHash]; exists {
-			label := GetLabel(packet.Leaf.Hash)
-			if label != "" {
-				parent.Links[label] = packet.Leaf.Hash
-			}
-		}
-	}
-
-	for leafHash, proof := range packet.Proofs {
-		for _, leaf := range d.Leafs {
-			if leaf.HasLink(leafHash) {
-				if leaf.Proofs == nil {
-					leaf.Proofs = make(map[string]*ClassicTreeBranch)
-				}
-				leaf.Proofs[leafHash] = proof
-				break
-			}
-		}
-	}
-}
-
-// ApplyAndVerifyTransmissionPacket verifies then applies a transmission packet
-func (d *Dag) ApplyAndVerifyTransmissionPacket(packet *TransmissionPacket) error {
-	if err := d.VerifyTransmissionPacket(packet); err != nil {
-		return err
-	}
-
-	d.ApplyTransmissionPacket(packet)
-	return nil
-}
-
-func (d *Dag) RemoveAllContent() {
-	for _, leaf := range d.Leafs {
-		leaf.Content = nil
-	}
-}
-
-// GetBatchedLeafSequence returns an ordered sequence of batched transmission packets
-// Each batch contains multiple related leaves that share common branches for efficient transmission
-func (d *Dag) GetBatchedLeafSequence() []*BatchedTransmissionPacket {
-	if BatchSize <= 0 {
-		individualPackets := d.GetLeafSequence()
-		var batchedPackets []*BatchedTransmissionPacket
-		for _, packet := range individualPackets {
-			batchedPackets = append(batchedPackets, &BatchedTransmissionPacket{
-				Leaves:        []*DagLeaf{packet.Leaf},
-				Relationships: map[string]string{packet.Leaf.Hash: packet.ParentHash},
-				Proofs:        packet.Proofs,
-			})
-		}
-		return batchedPackets
-	}
-
-	var sequence []*BatchedTransmissionPacket
-	visited := make(map[string]bool)
-
-	rootLeaf := d.Leafs[d.Root]
-	if rootLeaf == nil {
-		return sequence
-	}
-
-	rootLeafClone := rootLeaf.Clone()
-	rootLeafClone.Links = make(map[string]string)
-
-	rootBatch := &BatchedTransmissionPacket{
-		Leaves:        []*DagLeaf{rootLeafClone},
-		Relationships: map[string]string{rootLeafClone.Hash: ""},
-		Proofs:        make(map[string]*ClassicTreeBranch),
-	}
-	sequence = append(sequence, rootBatch)
-	visited[d.Root] = true
-
-	queue := []string{d.Root}
-	for len(queue) > 0 {
-		current := queue[0]
-		queue = queue[1:]
-
-		currentLeaf := d.Leafs[current]
-
-		var children []string
-		for _, link := range currentLeaf.Links {
-			if !visited[link] {
-				children = append(children, link)
-			}
-		}
-		sort.Strings(children)
-
-		d.batchChildren(children, current, &sequence, visited, &queue)
-	}
-
-	return sequence
-}
-
-// batchChildren groups children into batches based on size and shared branches
-func (d *Dag) batchChildren(children []string, parentHash string, sequence *[]*BatchedTransmissionPacket, visited map[string]bool, queue *[]string) {
-	if len(children) == 0 {
-		return
-	}
-
-	d.batchChildrenWithParentIncluded(children, parentHash, sequence, visited, queue)
-}
-
-// batchChildrenWithParentIncluded splits children across batches but includes parent in each batch
-// This allows incremental transmission while maintaining Merkle proof validity
-func (d *Dag) batchChildrenWithParentIncluded(children []string, parentHash string, sequence *[]*BatchedTransmissionPacket, visited map[string]bool, queue *[]string) {
-	parentLeaf := d.Leafs[parentHash]
-	if parentLeaf == nil {
-		return
-	}
-
-	currentBatch := &BatchedTransmissionPacket{
-		Leaves:        make([]*DagLeaf, 0),
-		Relationships: make(map[string]string),
-		Proofs:        make(map[string]*ClassicTreeBranch),
-	}
-
-	parentClone := parentLeaf.Clone()
-	parentClone.Links = make(map[string]string)
-	currentBatch.Leaves = append(currentBatch.Leaves, parentClone)
-
-	for _, childHash := range children {
-		childLeaf := d.Leafs[childHash]
-		if childLeaf == nil {
-			continue
-		}
-
-		leafClone := childLeaf.Clone()
-		leafClone.Links = make(map[string]string)
-
-		// Check if adding this leaf would exceed batch size limit
-		tempBatch := &BatchedTransmissionPacket{
-			Leaves:        append(currentBatch.Leaves, leafClone),
-			Relationships: make(map[string]string),
-			Proofs:        make(map[string]*ClassicTreeBranch),
-		}
-
-		// Copy existing relationships
-		for k, v := range currentBatch.Relationships {
-			tempBatch.Relationships[k] = v
-		}
-		tempBatch.Relationships[childHash] = parentHash
-
-		// Copy existing proofs
-		for k, v := range currentBatch.Proofs {
-			tempBatch.Proofs[k] = v
-		}
-
-		exceedsLimit := false
-		if BatchSize > 0 {
-			estimatedSize := d.estimateBatchSize(tempBatch)
-			safetyMargin := BatchSize / 5
-			effectiveLimit := BatchSize - safetyMargin
-			exceedsLimit = estimatedSize > effectiveLimit
-		}
-
-		if exceedsLimit {
-			// Current batch is full, add it to sequence and start a new batch
-			if len(currentBatch.Leaves) > 1 { // Only add if it has children beyond the parent
-				*sequence = append(*sequence, currentBatch)
-			}
-
-			// Start a new batch with just the parent
-			currentBatch = &BatchedTransmissionPacket{
-				Leaves:        []*DagLeaf{parentClone},
-				Relationships: make(map[string]string),
-				Proofs:        make(map[string]*ClassicTreeBranch),
-			}
-		}
-
-		// Add the child to current batch
-		currentBatch.Leaves = append(currentBatch.Leaves, leafClone)
-		currentBatch.Relationships[childHash] = parentHash
-
-		childCountInBatch := 0
-		for _, leaf := range currentBatch.Leaves[1:] {
-			if _, exists := currentBatch.Relationships[leaf.Hash]; exists {
-				childCountInBatch++
-			}
-		}
-
-		if childCountInBatch > 1 {
-			for leafHash := range currentBatch.Proofs {
-				if _, exists := currentBatch.Relationships[leafHash]; exists {
-					delete(currentBatch.Proofs, leafHash)
-				}
-			}
-
-			builder := merkle_tree.CreateTree()
-
-			type childInfo struct {
-				hash     string
-				hashOnly string
-			}
-			var children []childInfo
-
-			for _, leaf := range currentBatch.Leaves[1:] {
-				if _, exists := currentBatch.Relationships[leaf.Hash]; exists {
-					hashOnly := GetHash(leaf.Hash)
-					if hashOnly != "" {
-						children = append(children, childInfo{hash: leaf.Hash, hashOnly: hashOnly})
-					}
-				}
-			}
-
-			for _, child := range children {
-				builder.AddLeaf(child.hashOnly, child.hashOnly)
-			}
-
-			if len(children) > 1 {
-				merkleTree, _, err := builder.Build()
-				if err == nil {
-					// Get proofs by looking up the correct index for each child's hash
-					for _, child := range children {
-						index, exists := merkleTree.GetIndexForKey(child.hashOnly)
-						if exists {
-							currentBatch.Proofs[child.hash] = &ClassicTreeBranch{
-								Leaf:  child.hash,
-								Proof: merkleTree.Proofs[index],
-							}
-						}
-					}
-				}
-			}
-		}
-
-		visited[childHash] = true
-		*queue = append(*queue, childHash)
-	}
-
-	if len(currentBatch.Leaves) > 0 {
-		*sequence = append(*sequence, currentBatch)
-	}
-}
-
-// estimateBatchSize provides a rough estimate of a batched transmission packet's serialized size in bytes
-func (d *Dag) estimateBatchSize(batch *BatchedTransmissionPacket) int {
-	size := 0
-
-	// Estimate leaves (more accurate estimation)
-	for _, leaf := range batch.Leaves {
-		// Base size for leaf structure
-		size += 200 // CBOR overhead for leaf structure
-
-		// Content fields
-		size += len(leaf.Hash)
-		size += len(leaf.ItemName)
-		size += len(leaf.Content)
-		size += len(leaf.ClassicMerkleRoot)
-
-		// Additional data (key-value pairs)
-		size += len(leaf.AdditionalData) * 100 // more generous estimate
-
-		// Fixed fields
-		size += 50 // for Type, CurrentLinkCount, etc.
-	}
-
-	// Estimate relationships (key + value strings with CBOR overhead)
-	for k, v := range batch.Relationships {
-		size += len(k) + len(v) + 20 // CBOR overhead
-	}
-
-	// Estimate proofs (each proof has significant overhead)
-	for _, proof := range batch.Proofs {
-		size += len(proof.Leaf) + 100 // proof structure overhead
-		if proof.Proof != nil {
-			size += len(proof.Proof.Siblings) * 35 // hash size + CBOR overhead
-			size += 50                             // proof metadata
-		}
-	}
-
-	// Add significant overhead for CBOR serialization structure
-	size += 200 // CBOR map/array overhead
-
-	return size
-}
-
-// VerifyBatchedTransmissionPacket verifies a batched transmission packet independently
-func (d *Dag) VerifyBatchedTransmissionPacket(packet *BatchedTransmissionPacket) error {
-	parentStates := make(map[string]*DagLeaf)
-
-	// Build temporary parent leaves with their links reconstructed from relationships
-	for childHash, parentHash := range packet.Relationships {
-		if parentHash == "" {
-			continue
-		}
-
-		if _, exists := parentStates[parentHash]; !exists {
-			// Find parent in batch or existing DAG
-			var parentLeaf *DagLeaf
-			if batchParent := packet.findLeafByHash(parentHash); batchParent != nil {
-				parentLeaf = batchParent.Clone()
-			} else if dagParent, exists := d.Leafs[parentHash]; exists {
-				parentLeaf = dagParent.Clone()
-			} else {
-				return fmt.Errorf("parent %s not found for leaf %s in batched transmission packet", parentHash, childHash)
-			}
-
-			// Reconstruct links for this parent based on relationships in the batch
-			parentLeaf.Links = make(map[string]string)
-			for cHash, pHash := range packet.Relationships {
-				if pHash == parentHash {
-					if childLeaf := packet.findLeafByHash(cHash); childLeaf != nil {
-						label := GetLabel(childLeaf.Hash)
-						if label != "" {
-							parentLeaf.Links[label] = childLeaf.Hash
-						}
-					}
-				}
-			}
-
-			// Rebuild Merkle tree if parent has multiple children
-			if len(parentLeaf.Links) > 1 {
-				builder := merkle_tree.CreateTree()
-				for _, hash := range parentLeaf.Links {
-					hashOnly := GetHash(hash)
-					builder.AddLeaf(hashOnly, hashOnly)
-				}
-				merkleTree, leafMap, err := builder.Build()
-				if err != nil {
-					return fmt.Errorf("failed to rebuild merkle tree for parent %s: %w", parentHash, err)
-				}
-				parentLeaf.MerkleTree = merkleTree
-				parentLeaf.LeafMap = leafMap
-				parentLeaf.ClassicMerkleRoot = merkleTree.Root
-			}
-
-			parentStates[parentHash] = parentLeaf
-		}
-	}
-
-	// Now verify each leaf
-	for childHash, parentHash := range packet.Relationships {
-		childLeaf := packet.findLeafByHash(childHash)
-		if childLeaf == nil {
-			continue
-		}
-
-		if parentHash == "" {
-			if err := childLeaf.VerifyRootLeaf(nil); err != nil {
-				return fmt.Errorf("batched transmission packet root leaf %s verification failed: %w", childHash, err)
-			}
-		} else {
-			if err := childLeaf.VerifyLeaf(); err != nil {
-				return fmt.Errorf("batched transmission packet leaf %s verification failed: %w", childHash, err)
-			}
-
-			// Get the parent state for verification
-			parentLeaf, exists := parentStates[parentHash]
-			if !exists {
-				return fmt.Errorf("parent state not available for leaf %s", childHash)
-			}
-
-			// If parent has multiple children in this batch, verify the merkle proof
-			if len(parentLeaf.Links) > 1 {
-				proof, hasProof := packet.Proofs[childHash]
-				if !hasProof {
-					return fmt.Errorf("missing merkle proof for leaf %s in batched transmission packet", childHash)
-				}
-
-				if err := parentLeaf.VerifyBranch(proof); err != nil {
-					return fmt.Errorf("invalid merkle proof for leaf %s: %w", childHash, err)
-				}
-			}
-		}
-	}
-
-	return nil
-}
-
-// ApplyBatchedTransmissionPacket applies a batched transmission packet to the DAG
-func (d *Dag) ApplyBatchedTransmissionPacket(packet *BatchedTransmissionPacket) {
-	parentsToUpdate := make(map[string]bool)
-
-	for _, leaf := range packet.Leaves {
-		// Check if leaf already exists
-		if existingLeaf, exists := d.Leafs[leaf.Hash]; exists {
-			// Merge links from the new leaf into the existing one
-			if existingLeaf.Links == nil {
-				existingLeaf.Links = make(map[string]string)
-			}
-			for k, v := range leaf.Links {
-				existingLeaf.Links[k] = v
-			}
-			// Merge proofs from the new leaf into the existing one
-			if existingLeaf.Proofs == nil {
-				existingLeaf.Proofs = make(map[string]*ClassicTreeBranch)
-			}
-			for k, v := range leaf.Proofs {
-				existingLeaf.Proofs[k] = v
-			}
-			// Update other fields if needed (Merkle tree, etc.)
-			if leaf.MerkleTree != nil {
-				existingLeaf.MerkleTree = leaf.MerkleTree
-				existingLeaf.LeafMap = leaf.LeafMap
-				existingLeaf.ClassicMerkleRoot = leaf.ClassicMerkleRoot
-			}
-			// Don't overwrite the existing leaf, just update it
-		} else {
-			// Leaf doesn't exist, add it
-			d.Leafs[leaf.Hash] = leaf
-		}
-
-		// Update parent links
-		if parentHash, exists := packet.Relationships[leaf.Hash]; exists && parentHash != "" {
-			if parent, parentExists := d.Leafs[parentHash]; parentExists {
-				label := GetLabel(leaf.Hash)
-				if label != "" {
-					parent.Links[label] = leaf.Hash
-					parentsToUpdate[parentHash] = true
-				}
-			}
-		}
-	}
-
-	// Apply proofs to parent leaves
-	for childHash, proof := range packet.Proofs {
-		if parentHash, exists := packet.Relationships[childHash]; exists {
-			if parent := d.Leafs[parentHash]; parent != nil {
-				if parent.Proofs == nil {
-					parent.Proofs = make(map[string]*ClassicTreeBranch)
-				}
-				parent.Proofs[childHash] = proof
-			}
-		}
-	}
-}
-
-// ApplyAndVerifyBatchedTransmissionPacket verifies then applies a batched transmission packet
-func (d *Dag) ApplyAndVerifyBatchedTransmissionPacket(packet *BatchedTransmissionPacket) error {
-	if err := d.VerifyBatchedTransmissionPacket(packet); err != nil {
-		return err
-	}
-
-	d.ApplyBatchedTransmissionPacket(packet)
-	return nil
-}
-
-// findLeafByHash finds a leaf in the packet by its hash
-func (packet *BatchedTransmissionPacket) findLeafByHash(hash string) *DagLeaf {
-	for _, leaf := range packet.Leaves {
-		if leaf.Hash == hash {
-			return leaf
-		}
-	}
-	return nil
-}
-
-// GetRootLeaf returns the root leaf from the batch.
-func (packet *BatchedTransmissionPacket) GetRootLeaf() *DagLeaf {
-	if packet == nil || len(packet.Leaves) == 0 {
-		return nil
-	}
-
-	parentHashes := make(map[string]bool)
-	for _, parentHash := range packet.Relationships {
-		parentHashes[parentHash] = true
-	}
-
-	for _, leaf := range packet.Leaves {
-		if !parentHashes[leaf.Hash] {
-			return leaf
-		}
-	}
-
-	for _, leaf := range packet.Leaves {
-		if leaf.Type == DirectoryLeafType {
-			return leaf
-		}
-	}
-
-	return packet.Leaves[0]
-}
-
-// RecomputeLabels reassigns all labels in the DAG in optimal traversal order.
-func (d *Dag) RecomputeLabels() error {
-	if d.Root == "" {
-		return fmt.Errorf("cannot recompute labels: DAG has no root")
-	}
-
-	if _, exists := d.Leafs[d.Root]; !exists {
-		return fmt.Errorf("cannot recompute labels: root leaf not found")
-	}
-
-	// Track bare hash -> new label mapping
-	labelMapping := make(map[string]string)
-
-	// The root never gets a label
-	rootBareHash := StripLabel(d.Root)
-	labelMapping[rootBareHash] = "" // Empty label for root
-
-	// Breadth-first traversal
-	currentLabel := 1
-	queue := []string{rootBareHash}
-	visited := make(map[string]bool)
-	visited[rootBareHash] = true
-
-	for len(queue) > 0 {
-		currentBareHash := queue[0]
-		queue = queue[1:]
-
-		// Find the leaf with this bare hash
-		var currentLeaf *DagLeaf
-		for hash, leaf := range d.Leafs {
-			if StripLabel(hash) == currentBareHash {
-				currentLeaf = leaf
-				break
-			}
-		}
-
-		if currentLeaf == nil {
-			continue
-		}
-
-		// Process all children of this leaf
-		childHashes := make([]string, 0, len(currentLeaf.Links))
-		for _, childHashWithLabel := range currentLeaf.Links {
-			childBareHash := StripLabel(childHashWithLabel)
-			childHashes = append(childHashes, childBareHash)
-		}
-		sort.Strings(childHashes)
-
-		for _, childBareHash := range childHashes {
-
-			// Skip if already visited
-			if visited[childBareHash] {
-				continue
-			}
-			visited[childBareHash] = true
-
-			// Assign new label
-			newLabel := strconv.Itoa(currentLabel)
-			currentLabel++
-
-			labelMapping[childBareHash] = newLabel
-
-			// Add to queue for processing
-			queue = append(queue, childBareHash)
-		}
-	}
-
-	newLeafs := make(map[string]*DagLeaf)
-
-	for oldHash, leaf := range d.Leafs {
-		bareHash := StripLabel(oldHash)
-
-		// Get the new label for this leaf
-		newLabel, exists := labelMapping[bareHash]
-		if !exists {
-			// This leaf wasn't visited (shouldn't happen in a valid DAG)
-			continue
-		}
-
-		// Construct new hash
-		var newHash string
-		if newLabel == "" {
-			// Root leaf - no label
-			newHash = bareHash
-		} else {
-			newHash = newLabel + ":" + bareHash
-		}
-
-		// Update the leaf's Hash field
-		leaf.Hash = newHash
-
-		// Update all the links to children with new labels
-		if len(leaf.Links) > 0 {
-			newLinks := make(map[string]string)
-			for _, childHashWithOldLabel := range leaf.Links {
-				childBareHash := StripLabel(childHashWithOldLabel)
-
-				// Get the new label for this child
-				childNewLabel, exists := labelMapping[childBareHash]
-				if !exists {
-					// Child wasn't visited (shouldn't happen)
-					continue
-				}
-
-				// Construct new child hash
-				var newChildHash string
-				if childNewLabel == "" {
-					// Root as child (shouldn't happen normally)
-					newChildHash = childBareHash
-				} else {
-					newChildHash = childNewLabel + ":" + childBareHash
-				}
-
-				// Add link with new label as key
-				newLinks[childNewLabel] = newChildHash
-			}
-			leaf.Links = newLinks
-		}
-
-		// Add to new leafs map with new hash as key
-		newLeafs[newHash] = leaf
-	}
-
-	// Replace the leafs map
-	d.Leafs = newLeafs
-
-	// Update root reference if needed
-	rootBare := StripLabel(d.Root)
-	d.Root = rootBare
-
-	// Update LatestLabel on root
-	if rootLeaf, exists := d.Leafs[d.Root]; exists {
-		rootLeaf.LatestLabel = strconv.Itoa(currentLabel - 1)
-	}
-
-	return nil
-}
-
-// Diff compares this DAG with another DAG and returns all differences.
-func (d *Dag) Diff(other *Dag) (*DagDiff, error) {
-	if d == nil {
-		return nil, fmt.Errorf("cannot diff: source DAG is nil")
-	}
-	if other == nil {
-		return nil, fmt.Errorf("cannot diff: target DAG is nil")
-	}
-
-	diff := &DagDiff{
-		Diffs: make(map[string]*LeafDiff),
-		Summary: DiffSummary{
-			Added:   0,
-			Removed: 0,
-			Total:   0,
-		},
-	}
-
-	// Create maps of bare hash -> leaf for both DAGs
-	oldLeafs := make(map[string]*DagLeaf)
-	for hash, leaf := range d.Leafs {
-		bareHash := StripLabel(hash)
-		oldLeafs[bareHash] = leaf
-	}
-
-	newLeafs := make(map[string]*DagLeaf)
-	for hash, leaf := range other.Leafs {
-		bareHash := StripLabel(hash)
-		newLeafs[bareHash] = leaf
-	}
-
-	// Find added leaves
-	for bareHash, newLeaf := range newLeafs {
-		if _, existsInOld := oldLeafs[bareHash]; !existsInOld {
-			// Leaf was added
-			diff.Diffs[bareHash] = &LeafDiff{
-				Type:     DiffTypeAdded,
-				BareHash: bareHash,
-				Leaf:     newLeaf,
-			}
-			diff.Summary.Added++
-			diff.Summary.Total++
-		}
-	}
-
-	// Find removed leaves
-	for bareHash, oldLeaf := range oldLeafs {
-		if _, existsInNew := newLeafs[bareHash]; !existsInNew {
-			// Leaf was removed
-			diff.Diffs[bareHash] = &LeafDiff{
-				Type:     DiffTypeRemoved,
-				BareHash: bareHash,
-				Leaf:     oldLeaf,
-			}
-			diff.Summary.Removed++
-			diff.Summary.Total++
-		}
-	}
-
-	return diff, nil
-}
-
-// DiffFromNewLeaves creates a DagDiff by comparing an old DAG with a set of new leaves.
-func (d *Dag) DiffFromNewLeaves(newLeaves map[string]*DagLeaf) (*DagDiff, error) {
-	if d == nil {
-		return nil, fmt.Errorf("cannot diff: source DAG is nil")
-	}
-	if newLeaves == nil {
-		return nil, fmt.Errorf("cannot diff: new leaves map is nil")
-	}
-
-	diff := &DagDiff{
-		Diffs: make(map[string]*LeafDiff),
-		Summary: DiffSummary{
-			Added:   0,
-			Removed: 0,
-			Total:   0,
-		},
-	}
-
-	// Create map of bare hash -> leaf for old DAG
-	oldLeafs := make(map[string]*DagLeaf)
-	for hash, leaf := range d.Leafs {
-		bareHash := StripLabel(hash)
-		oldLeafs[bareHash] = leaf
-	}
-
-	// Create map of bare hash -> leaf for new leaves
-	newLeafsMap := make(map[string]*DagLeaf)
-	for hash, leaf := range newLeaves {
-		bareHash := StripLabel(hash)
-		newLeafsMap[bareHash] = leaf
-	}
-
-	// Find added leaves (in new but not in old)
-	for bareHash, newLeaf := range newLeafsMap {
-		if _, existsInOld := oldLeafs[bareHash]; !existsInOld {
-			diff.Diffs[bareHash] = &LeafDiff{
-				Type:     DiffTypeAdded,
-				BareHash: bareHash,
-				Leaf:     newLeaf,
-			}
-			diff.Summary.Added++
-			diff.Summary.Total++
-		}
-	}
-
-	// Find removed leaves (in old but not in new)
-	for bareHash, oldLeaf := range oldLeafs {
-		if _, existsInNew := newLeafsMap[bareHash]; !existsInNew {
-			diff.Diffs[bareHash] = &LeafDiff{
-				Type:     DiffTypeRemoved,
-				BareHash: bareHash,
-				Leaf:     oldLeaf,
-			}
-			diff.Summary.Removed++
-			diff.Summary.Total++
-		}
-	}
-
-	return diff, nil
-}
-
-// GetAddedLeaves returns a map of all added leaves from the diff.
-func (diff *DagDiff) GetAddedLeaves() map[string]*DagLeaf {
-	addedLeaves := make(map[string]*DagLeaf)
-
-	for bareHash, leafDiff := range diff.Diffs {
-		if leafDiff.Type == DiffTypeAdded {
-			addedLeaves[bareHash] = leafDiff.Leaf
-		}
-	}
-
-	return addedLeaves
-}
-
-// GetRemovedLeaves returns a map of all removed leaves from the diff.
-func (diff *DagDiff) GetRemovedLeaves() map[string]*DagLeaf {
-	removedLeaves := make(map[string]*DagLeaf)
-
-	for bareHash, leafDiff := range diff.Diffs {
-		if leafDiff.Type == DiffTypeRemoved {
-			removedLeaves[bareHash] = leafDiff.Leaf
-		}
-	}
-
-	return removedLeaves
-}
-
-// ApplyToDAG applies the diff to a DAG, creating a new DAG with the changes.
-// This works by:
-// 1. Creating a pool of all available leaves (old leaves + new leaves from diff)
-// 2. Finding the new root (which will be one of the added leaves)
-// 3. Traversing from the new root to collect only referenced leaves
-// 4. Recomputing labels for consistency
-//
-// Leaves from the old DAG that aren't referenced by the new root are naturally excluded.
-func (diff *DagDiff) ApplyToDAG(oldDag *Dag) (*Dag, error) {
-	if oldDag == nil {
-		return nil, fmt.Errorf("cannot apply diff: old DAG is nil")
-	}
-	if diff == nil {
-		return nil, fmt.Errorf("cannot apply diff: diff is nil")
-	}
-
-	// If no additions, the DAG structure hasn't changed
-	if diff.Summary.Added == 0 {
-		// Return a copy of the old DAG
-		newDag := &Dag{
-			Root:  oldDag.Root,
-			Leafs: make(map[string]*DagLeaf),
-		}
-		for hash, leaf := range oldDag.Leafs {
-			newDag.Leafs[hash] = leaf
-		}
-		return newDag, nil
-	}
-
-	// Build a complete pool of available leaves using bare hashes as keys
-	leafPool := make(map[string]*DagLeaf)
-
-	// Add all leaves from old DAG
-	for hash, leaf := range oldDag.Leafs {
-		bareHash := StripLabel(hash)
-		leafPool[bareHash] = leaf
-	}
-
-	// Add all new leaves from diff (these will override if same bare hash exists)
-	for bareHash, leafDiff := range diff.Diffs {
-		if leafDiff.Type == DiffTypeAdded {
-			leafPool[bareHash] = leafDiff.Leaf
-		}
-	}
-
-	// Find the new root - it must be one of the added leaves
-	// The root is the leaf that's not referenced by any other leaf
-	addedLeaves := diff.GetAddedLeaves()
-
-	// Build a set of all child hashes referenced by ALL leaves in the pool
-	childHashes := make(map[string]bool)
-	for _, leaf := range leafPool {
-		for _, childHash := range leaf.Links {
-			bareChildHash := StripLabel(childHash)
-			childHashes[bareChildHash] = true
-		}
-	}
-
-	// Find the new root among added leaves (not referenced by any leaf)
-	var newRootHash string
-	for bareHash, leaf := range addedLeaves {
-		if !childHashes[bareHash] {
-			// verify it has root characteristics
-			if leaf.Type == DirectoryLeafType || leaf.LeafCount > 0 || leaf.LatestLabel != "" {
-				newRootHash = bareHash
-				break
-			}
-		}
-	}
-
-	if newRootHash == "" {
-		return nil, fmt.Errorf("cannot find new root among added leaves")
-	}
-
-	// Now traverse from the new root to collect all referenced leaves
-	newDagLeaves := make(map[string]*DagLeaf)
-	visited := make(map[string]bool)
-
-	var traverse func(bareHash string) error
-	traverse = func(bareHash string) error {
-		if visited[bareHash] {
+	// Use a counter to track label assignment
+	labelCounter := 1
+
+	// Iterate through the DAG and assign labels in traversal order
+	err := d.IterateDag(func(leaf *DagLeaf, parent *DagLeaf) error {
+		// Skip the root (it's implicitly label "0")
+		if leaf.Hash == d.Root {
 			return nil
 		}
-		visited[bareHash] = true
 
-		leaf, exists := leafPool[bareHash]
-		if !exists {
-			return fmt.Errorf("missing leaf in pool: %s", bareHash)
-		}
-
-		// Add this leaf to the new DAG
-		newDagLeaves[bareHash] = leaf
-
-		// Traverse all children
-		for _, childHash := range leaf.Links {
-			bareChildHash := StripLabel(childHash)
-			if err := traverse(bareChildHash); err != nil {
-				return err
-			}
-		}
+		// Assign label to this leaf
+		label := strconv.Itoa(labelCounter)
+		d.Labels[label] = leaf.Hash
+		labelCounter++
 
 		return nil
-	}
+	})
 
-	// Start traversal from new root
-	if err := traverse(newRootHash); err != nil {
-		return nil, fmt.Errorf("failed to traverse from new root: %w", err)
-	}
-
-	// Create the new DAG
-	newDag := &Dag{
-		Root:  newRootHash,
-		Leafs: newDagLeaves,
-	}
-
-	// Recompute labels to ensure consistency
-	if err := newDag.RecomputeLabels(); err != nil {
-		return nil, fmt.Errorf("failed to recompute labels: %w", err)
-	}
-
-	return newDag, nil
+	return err
 }
 
-// CreatePartialDAGFromAdded creates a partial DAG containing only the added leaves.
-func (diff *DagDiff) CreatePartialDag() (*Dag, error) {
-	if diff == nil {
-		return nil, fmt.Errorf("cannot create partial DAG: diff is nil")
+// ClearLabels removes all label assignments from the DAG.
+func (d *Dag) ClearLabels() {
+	if d.Labels != nil {
+		for k := range d.Labels {
+			delete(d.Labels, k)
+		}
+	}
+}
+
+// GetHashesByLabelRange returns an array of leaf hashes for the specified label range (inclusive).
+// startLabel and endLabel are string representations of numeric labels.
+// For example, GetHashesByLabelRange("20", "48") returns hashes for labels 20, 21, 22, ..., 48.
+// Returns an error if labels are invalid, out of range, or if labels haven't been calculated.
+func (d *Dag) GetHashesByLabelRange(startLabel, endLabel string) ([]string, error) {
+	if len(d.Labels) == 0 {
+		return nil, fmt.Errorf("labels not calculated, call CalculateLabels() first")
 	}
 
-	addedLeaves := diff.GetAddedLeaves()
-	if len(addedLeaves) == 0 {
-		return nil, fmt.Errorf("no added leaves to create partial DAG")
+	// Parse label strings to integers
+	start, err := strconv.Atoi(startLabel)
+	if err != nil {
+		return nil, fmt.Errorf("invalid start label %q: %w", startLabel, err)
 	}
 
-	// Create DAG with added leaves
-	partialDag := &Dag{
-		Leafs: make(map[string]*DagLeaf),
+	end, err := strconv.Atoi(endLabel)
+	if err != nil {
+		return nil, fmt.Errorf("invalid end label %q: %w", endLabel, err)
 	}
 
-	// Add all leaves using bare hash as key initially
-	for bareHash, leaf := range addedLeaves {
-		partialDag.Leafs[bareHash] = leaf
+	// Validate range
+	if start < 1 {
+		return nil, fmt.Errorf("start label must be >= 1 (root is label 0 and not included)")
 	}
 
-	// Find the root among added leaves (leaf not referenced by other added leaves)
-	childHashes := make(map[string]bool)
-	for _, leaf := range addedLeaves {
-		for _, childHash := range leaf.Links {
-			bareChildHash := StripLabel(childHash)
-			// Only count if the child is also in our added leaves
-			if _, exists := addedLeaves[bareChildHash]; exists {
-				childHashes[bareChildHash] = true
-			}
+	if end < start {
+		return nil, fmt.Errorf("end label (%d) must be >= start label (%d)", end, start)
+	}
+
+	if end > len(d.Labels) {
+		return nil, fmt.Errorf("end label (%d) exceeds available labels (%d)", end, len(d.Labels))
+	}
+
+	// Collect hashes in the specified range
+	var hashes []string
+	for i := start; i <= end; i++ {
+		label := strconv.Itoa(i)
+		hash, exists := d.Labels[label]
+		if !exists {
+			return nil, fmt.Errorf("label %q not found in labels map", label)
+		}
+		hashes = append(hashes, hash)
+	}
+
+	return hashes, nil
+}
+
+// GetLabel returns the label for a given leaf hash.
+// Returns "0" if the hash is the root, or the numeric label as a string for other leaves.
+// Returns an error if labels haven't been calculated or if the hash is not found.
+func (d *Dag) GetLabel(hash string) (string, error) {
+	// Check if it's the root
+	if hash == d.Root {
+		return "0", nil
+	}
+
+	// Check if labels have been calculated
+	if len(d.Labels) == 0 {
+		return "", fmt.Errorf("labels not calculated, call CalculateLabels() first")
+	}
+
+	// Search for the hash in the labels map
+	for label, labelHash := range d.Labels {
+		if labelHash == hash {
+			return label, nil
 		}
 	}
 
-	// Find the root (not a child of any added leaf)
-	var rootBareHash string
-	for bareHash := range addedLeaves {
-		if !childHashes[bareHash] {
-			rootBareHash = bareHash
-			break
-		}
-	}
-
-	if rootBareHash == "" {
-		// If all leaves reference each other, pick the directory leaf or first one
-		for bareHash, leaf := range addedLeaves {
-			if leaf.Type == DirectoryLeafType {
-				rootBareHash = bareHash
-				break
-			}
-		}
-		if rootBareHash == "" {
-			// Just pick the first one
-			for bareHash := range addedLeaves {
-				rootBareHash = bareHash
-				break
-			}
-		}
-	}
-
-	partialDag.Root = rootBareHash
-
-	// Recompute labels for consistency
-	if err := partialDag.RecomputeLabels(); err != nil {
-		return nil, fmt.Errorf("failed to recompute labels: %w", err)
-	}
-
-	return partialDag, nil
+	// Hash not found
+	return "", fmt.Errorf("hash %q not found in labels", hash)
 }

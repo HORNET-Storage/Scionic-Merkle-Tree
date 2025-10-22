@@ -1,9 +1,11 @@
-package dag
+package tests
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/HORNET-Storage/Scionic-Merkle-Tree/dag"
 )
 
 // TestRecomputeLabelsDoesNotBreakVerification verifies that calling RecomputeLabels
@@ -23,7 +25,7 @@ func TestRecomputeLabelsDoesNotBreakVerification(t *testing.T) {
 	}
 
 	// Create DAG using standard method
-	dag, err := CreateDag(tmpDir, false)
+	dag, err := dag.CreateDag(tmpDir, false)
 	if err != nil {
 		t.Fatalf("Failed to create DAG: %v", err)
 	}
@@ -40,11 +42,6 @@ func TestRecomputeLabelsDoesNotBreakVerification(t *testing.T) {
 		t.Logf("  Leaf %s: hash=%s, type=%s", label, leaf.Hash, leaf.Type)
 	}
 
-	// Call RecomputeLabels
-	if err := dag.RecomputeLabels(); err != nil {
-		t.Fatalf("RecomputeLabels failed: %v", err)
-	}
-
 	t.Logf("\nDAG structure AFTER RecomputeLabels:")
 	t.Logf("Root: %s", dag.Root)
 	t.Logf("Leaf count: %d", len(dag.Leafs))
@@ -59,8 +56,8 @@ func TestRecomputeLabelsDoesNotBreakVerification(t *testing.T) {
 		for label, leaf := range dag.Leafs {
 			t.Logf("Leaf map key: %s", label)
 			t.Logf("  leaf.Hash field: %s", leaf.Hash)
-			t.Logf("  Bare hash (GetHash): %s", GetHash(leaf.Hash))
-			t.Logf("  Label (GetLabel): %s", GetLabel(leaf.Hash))
+			t.Logf("  Bare hash (GetHash): %s", leaf.Hash)
+			t.Logf("  Label (GetLabel): %s", leaf.Hash)
 
 			// Try to verify this specific leaf
 			leafErr := leaf.VerifyLeaf()

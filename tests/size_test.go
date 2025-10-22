@@ -1,4 +1,4 @@
-package dag
+package tests
 
 import (
 	"bytes"
@@ -8,6 +8,8 @@ import (
 	"sort"
 	"testing"
 
+	"github.com/HORNET-Storage/Scionic-Merkle-Tree/dag"
+	"github.com/HORNET-Storage/Scionic-Merkle-Tree/testutil"
 	cbor "github.com/fxamacker/cbor/v2"
 )
 
@@ -29,12 +31,12 @@ func TestContentSizeAndDagSizeAccuracy(t *testing.T) {
 			t.Fatalf("Failed to write test file: %v", err)
 		}
 
-		dag, err := CreateDag(testFile, false)
+		d, err := dag.CreateDag(testFile, false)
 		if err != nil {
 			t.Fatalf("Failed to create DAG: %v", err)
 		}
 
-		rootLeaf := dag.Leafs[dag.Root]
+		rootLeaf := d.Leafs[d.Root]
 
 		// Test 1: ContentSize should match file size
 		if rootLeaf.ContentSize != int64(len(testContent)) {
@@ -53,62 +55,54 @@ func TestContentSizeAndDagSizeAccuracy(t *testing.T) {
 			t.Fatalf("Failed to write test file: %v", err)
 		}
 
-		dag, err := CreateDag(testFile, false)
+		d, err := dag.CreateDag(testFile, false)
 		if err != nil {
 			t.Fatalf("Failed to create DAG: %v", err)
 		}
 
-		rootLeaf := dag.Leafs[dag.Root]
+		rootLeaf := d.Leafs[d.Root]
 
 		// Test 2: DagSize should be sum of all serialized leaves
 		// We use the same two-pass approach as verification
-		rootHash := GetHash(rootLeaf.Hash)
 		var childrenDagSize int64
-		for _, leaf := range dag.Leafs {
-			if GetHash(leaf.Hash) == rootHash {
+		for _, leaf := range d.Leafs {
+			if leaf.Hash == rootLeaf.Hash {
 				continue // Skip root
 			}
 
-			bareHash := GetHash(leaf.Hash)
 			var linkHashes []string
 			if len(leaf.Links) > 0 {
 				linkHashes = make([]string, 0, len(leaf.Links))
-				for _, linkHash := range leaf.Links {
-					linkHashes = append(linkHashes, GetHash(linkHash))
-				}
+				linkHashes = append(linkHashes, leaf.Links...)
 				sort.Strings(linkHashes)
 			}
 
 			data := struct {
 				Hash              string
 				ItemName          string
-				Type              LeafType
+				Type              dag.LeafType
 				ContentHash       []byte
 				Content           []byte
 				ClassicMerkleRoot []byte
 				CurrentLinkCount  int
-				LatestLabel       string
 				LeafCount         int
 				ContentSize       int64
 				DagSize           int64
 				Links             []string
 				AdditionalData    map[string]string
-				StoredProofs      map[string]*ClassicTreeBranch
 			}{
-				Hash:              bareHash,
+				Hash:              leaf.Hash,
 				ItemName:          leaf.ItemName,
 				Type:              leaf.Type,
 				ContentHash:       leaf.ContentHash,
 				Content:           leaf.Content,
 				ClassicMerkleRoot: leaf.ClassicMerkleRoot,
 				CurrentLinkCount:  leaf.CurrentLinkCount,
-				LatestLabel:       leaf.LatestLabel,
 				LeafCount:         leaf.LeafCount,
 				ContentSize:       leaf.ContentSize,
 				DagSize:           leaf.DagSize,
 				Links:             linkHashes,
-				AdditionalData:    sortMapByKeys(leaf.AdditionalData),
-				StoredProofs:      leaf.Proofs,
+				AdditionalData:    dag.SortMapByKeys(leaf.AdditionalData),
 			}
 
 			serialized, err := cbor.Marshal(data)
@@ -121,26 +115,24 @@ func TestContentSizeAndDagSizeAccuracy(t *testing.T) {
 		// Build temp root with DagSize=0 to measure
 		tempLeafData := struct {
 			ItemName         string
-			Type             LeafType
+			Type             dag.LeafType
 			MerkleRoot       []byte
 			CurrentLinkCount int
-			LatestLabel      string
 			LeafCount        int
 			ContentSize      int64
 			DagSize          int64
 			ContentHash      []byte
-			AdditionalData   []keyValue
+			AdditionalData   []dag.KeyValue
 		}{
 			ItemName:         rootLeaf.ItemName,
 			Type:             rootLeaf.Type,
 			MerkleRoot:       rootLeaf.ClassicMerkleRoot,
 			CurrentLinkCount: rootLeaf.CurrentLinkCount,
-			LatestLabel:      rootLeaf.LatestLabel,
 			LeafCount:        rootLeaf.LeafCount,
 			ContentSize:      rootLeaf.ContentSize,
 			DagSize:          0,
 			ContentHash:      rootLeaf.ContentHash,
-			AdditionalData:   sortMapForVerification(rootLeaf.AdditionalData),
+			AdditionalData:   dag.SortMapForVerification(rootLeaf.AdditionalData),
 		}
 
 		tempSerialized, err := cbor.Marshal(tempLeafData)
@@ -169,17 +161,17 @@ func TestContentSizeAndDagSizeAccuracy(t *testing.T) {
 			t.Fatalf("Failed to write test file: %v", err)
 		}
 
-		dag, err := CreateDag(testFile, false)
+		d, err := dag.CreateDag(testFile, false)
 		if err != nil {
 			t.Fatalf("Failed to create DAG: %v", err)
 		}
 
 		// Test 3: Tampering with ContentSize should invalidate hash
-		tamperedDag := &Dag{
-			Root:  dag.Root,
-			Leafs: make(map[string]*DagLeaf),
+		tamperedDag := &dag.Dag{
+			Root:  d.Root,
+			Leafs: make(map[string]*dag.DagLeaf),
 		}
-		for hash, leaf := range dag.Leafs {
+		for hash, leaf := range d.Leafs {
 			tamperedDag.Leafs[hash] = leaf.Clone()
 		}
 
@@ -207,17 +199,17 @@ func TestContentSizeAndDagSizeAccuracy(t *testing.T) {
 			t.Fatalf("Failed to write test file: %v", err)
 		}
 
-		dag, err := CreateDag(testFile, false)
+		d, err := dag.CreateDag(testFile, false)
 		if err != nil {
 			t.Fatalf("Failed to create DAG: %v", err)
 		}
 
 		// Test 4: Tampering with DagSize should invalidate hash
-		tamperedDag := &Dag{
-			Root:  dag.Root,
-			Leafs: make(map[string]*DagLeaf),
+		tamperedDag := &dag.Dag{
+			Root:  d.Root,
+			Leafs: make(map[string]*dag.DagLeaf),
 		}
-		for hash, leaf := range dag.Leafs {
+		for hash, leaf := range d.Leafs {
 			tamperedDag.Leafs[hash] = leaf.Clone()
 		}
 
@@ -240,13 +232,13 @@ func TestContentSizeAndDagSizeAccuracy(t *testing.T) {
 	t.Run("ChunkedFileContentSize", func(t *testing.T) {
 		// Test 5: For chunked files, ContentSize should match total content
 		largeFile := filepath.Join(testDir, "large.txt")
-		largeContent := bytes.Repeat([]byte("e"), ChunkSize*2+100)
+		largeContent := bytes.Repeat([]byte("e"), dag.ChunkSize*2+100)
 		err = os.WriteFile(largeFile, largeContent, 0644)
 		if err != nil {
 			t.Fatalf("Failed to write large file: %v", err)
 		}
 
-		largeDag, err := CreateDag(largeFile, false)
+		largeDag, err := dag.CreateDag(largeFile, false)
 		if err != nil {
 			t.Fatalf("Failed to create large DAG: %v", err)
 		}
@@ -260,12 +252,12 @@ func TestContentSizeAndDagSizeAccuracy(t *testing.T) {
 		// Verify we actually have chunks
 		chunkCount := 0
 		for _, leaf := range largeDag.Leafs {
-			if leaf.Type == ChunkLeafType {
+			if leaf.Type == dag.ChunkLeafType {
 				chunkCount++
 			}
 		}
 
-		expectedChunks := (len(largeContent) + ChunkSize - 1) / ChunkSize
+		expectedChunks := (len(largeContent) + dag.ChunkSize - 1) / dag.ChunkSize
 		if chunkCount != expectedChunks {
 			t.Errorf("Expected %d chunks, got %d", expectedChunks, chunkCount)
 		}
@@ -304,12 +296,12 @@ func TestDirectoryContentSize(t *testing.T) {
 		totalSize += int64(size)
 	}
 
-	dag, err := CreateDag(inputDir, false)
+	d, err := dag.CreateDag(inputDir, false)
 	if err != nil {
 		t.Fatalf("Failed to create DAG: %v", err)
 	}
 
-	rootLeaf := dag.Leafs[dag.Root]
+	rootLeaf := d.Leafs[d.Root]
 
 	if rootLeaf.ContentSize != totalSize {
 		t.Errorf("Directory ContentSize mismatch: expected %d, got %d",
@@ -320,8 +312,8 @@ func TestDirectoryContentSize(t *testing.T) {
 		len(fileSizes), totalSize, rootLeaf.ContentSize)
 
 	// Verify each file leaf has correct size
-	for _, leaf := range dag.Leafs {
-		if leaf.Type == FileLeafType && leaf.Content != nil {
+	for _, leaf := range d.Leafs {
+		if leaf.Type == dag.FileLeafType && leaf.Content != nil {
 			fileSize := int64(len(leaf.Content))
 			t.Logf("File leaf %s: %d bytes", leaf.ItemName, fileSize)
 		}
@@ -331,73 +323,61 @@ func TestDirectoryContentSize(t *testing.T) {
 // TestTwoPassSerializationDeterminism validates that the two-pass approach
 // produces consistent and deterministic results
 func TestTwoPassSerializationDeterminism(t *testing.T) {
-	testDir, err := os.MkdirTemp("", "two_pass_test_*")
-	if err != nil {
-		t.Fatalf("Failed to create temp directory: %v", err)
-	}
-	defer os.RemoveAll(testDir)
+	testutil.RunTestWithMultiFileFixtures(t, func(t *testing.T, dag1 *dag.Dag, fixture testutil.TestFixture, fixturePath string) {
+		// Create DAG two more times from same fixture path
+		dag2, err := dag.CreateDag(fixturePath, false)
+		if err != nil {
+			t.Fatalf("Failed to create second DAG: %v", err)
+		}
 
-	inputDir := filepath.Join(testDir, "input")
-	GenerateDummyDirectory(inputDir, 3, 5, 2, 3)
+		dag3, err := dag.CreateDag(fixturePath, false)
+		if err != nil {
+			t.Fatalf("Failed to create third DAG: %v", err)
+		}
 
-	// Create DAG three times
-	dag1, err := CreateDag(inputDir, false)
-	if err != nil {
-		t.Fatalf("Failed to create first DAG: %v", err)
-	}
+		// Root hashes should be identical (deterministic)
+		if dag1.Root != dag2.Root {
+			t.Errorf("Root hash not deterministic between dag1 and dag2: %s vs %s",
+				dag1.Root, dag2.Root)
+		}
 
-	dag2, err := CreateDag(inputDir, false)
-	if err != nil {
-		t.Fatalf("Failed to create second DAG: %v", err)
-	}
+		if dag1.Root != dag3.Root {
+			t.Errorf("Root hash not deterministic between dag1 and dag3: %s vs %s",
+				dag1.Root, dag3.Root)
+		}
 
-	dag3, err := CreateDag(inputDir, false)
-	if err != nil {
-		t.Fatalf("Failed to create third DAG: %v", err)
-	}
+		// DagSize should be identical
+		root1 := dag1.Leafs[dag1.Root]
+		root2 := dag2.Leafs[dag2.Root]
+		root3 := dag3.Leafs[dag3.Root]
 
-	// Root hashes should be identical (deterministic)
-	if dag1.Root != dag2.Root {
-		t.Errorf("Root hash not deterministic between dag1 and dag2: %s vs %s",
-			dag1.Root, dag2.Root)
-	}
+		if root1.DagSize != root2.DagSize {
+			t.Errorf("DagSize not deterministic between dag1 and dag2: %d vs %d",
+				root1.DagSize, root2.DagSize)
+		}
 
-	if dag1.Root != dag3.Root {
-		t.Errorf("Root hash not deterministic between dag1 and dag3: %s vs %s",
-			dag1.Root, dag3.Root)
-	}
+		if root1.DagSize != root3.DagSize {
+			t.Errorf("DagSize not deterministic between dag1 and dag3: %d vs %d",
+				root1.DagSize, root3.DagSize)
+		}
 
-	// DagSize should be identical
-	root1 := dag1.Leafs[dag1.Root]
-	root2 := dag2.Leafs[dag2.Root]
-	root3 := dag3.Leafs[dag3.Root]
+		// ContentSize should be identical
+		if root1.ContentSize != root2.ContentSize {
+			t.Errorf("ContentSize not deterministic between dag1 and dag2: %d vs %d",
+				root1.ContentSize, root2.ContentSize)
+		}
 
-	if root1.DagSize != root2.DagSize {
-		t.Errorf("DagSize not deterministic between dag1 and dag2: %d vs %d",
-			root1.DagSize, root2.DagSize)
-	}
+		if root1.ContentSize != root3.ContentSize {
+			t.Errorf("ContentSize not deterministic between dag1 and dag3: %d vs %d",
+				root1.ContentSize, root3.ContentSize)
+		}
 
-	if root1.DagSize != root3.DagSize {
-		t.Errorf("DagSize not deterministic between dag1 and dag3: %d vs %d",
-			root1.DagSize, root3.DagSize)
-	}
-
-	// ContentSize should be identical
-	if root1.ContentSize != root2.ContentSize {
-		t.Errorf("ContentSize not deterministic between dag1 and dag2: %d vs %d",
-			root1.ContentSize, root2.ContentSize)
-	}
-
-	if root1.ContentSize != root3.ContentSize {
-		t.Errorf("ContentSize not deterministic between dag1 and dag3: %d vs %d",
-			root1.ContentSize, root3.ContentSize)
-	}
-
-	t.Logf("Determinism verified across 3 DAG creations:")
-	t.Logf("  Root Hash: %s", dag1.Root)
-	t.Logf("  ContentSize: %d bytes", root1.ContentSize)
-	t.Logf("  DagSize: %d bytes", root1.DagSize)
-	t.Logf("  LeafCount: %d", root1.LeafCount)
+		t.Logf("✓ %s: Determinism verified across 3 DAG creations", fixture.Name)
+		t.Logf("  Root Hash: %s", dag1.Root)
+		t.Logf("  ContentSize: %d bytes", root1.ContentSize)
+		t.Logf("  DagSize: %d bytes", root1.DagSize)
+		t.Logf("  LeafCount: %d", root1.LeafCount)
+	})
 }
 
 // TestEmptyFileContentSize validates that empty files have ContentSize=0
@@ -414,12 +394,12 @@ func TestEmptyFileContentSize(t *testing.T) {
 		t.Fatalf("Failed to write empty file: %v", err)
 	}
 
-	dag, err := CreateDag(emptyFile, false)
+	d, err := dag.CreateDag(emptyFile, false)
 	if err != nil {
 		t.Fatalf("Failed to create DAG: %v", err)
 	}
 
-	rootLeaf := dag.Leafs[dag.Root]
+	rootLeaf := d.Leafs[d.Root]
 
 	if rootLeaf.ContentSize != 0 {
 		t.Errorf("Empty file ContentSize should be 0, got %d", rootLeaf.ContentSize)
@@ -449,22 +429,22 @@ func TestSizeFieldsInHash(t *testing.T) {
 		t.Fatalf("Failed to write test file: %v", err)
 	}
 
-	dag, err := CreateDag(testFile, false)
+	dag1, err := dag.CreateDag(testFile, false)
 	if err != nil {
 		t.Fatalf("Failed to create DAG: %v", err)
 	}
 
-	originalRoot := dag.Leafs[dag.Root]
+	originalRoot := dag1.Leafs[dag1.Root]
 	originalHash := originalRoot.Hash
 
 	// Create a second DAG with same content
-	dag2, err := CreateDag(testFile, false)
+	dag2, err := dag.CreateDag(testFile, false)
 	if err != nil {
 		t.Fatalf("Failed to create second DAG: %v", err)
 	}
 
 	// Hashes should be identical
-	if dag.Root != dag2.Root {
+	if dag1.Root != dag2.Root {
 		t.Errorf("Same content should produce same hash")
 	}
 

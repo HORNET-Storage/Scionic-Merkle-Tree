@@ -2,18 +2,17 @@ package dag
 
 import (
 	"encoding/json"
+	"sort"
 
 	merkle_tree "github.com/HORNET-Storage/Scionic-Merkle-Tree/tree"
 	cbor "github.com/fxamacker/cbor/v2"
 )
 
-// SerializableDag is a minimal version of Dag for efficient serialization
 type SerializableDag struct {
 	Root  string
 	Leafs map[string]*SerializableDagLeaf
 }
 
-// SerializableDagLeaf is a minimal version of DagLeaf for efficient serialization
 type SerializableDagLeaf struct {
 	Hash              string
 	ItemName          string
@@ -22,30 +21,25 @@ type SerializableDagLeaf struct {
 	Content           []byte
 	ClassicMerkleRoot []byte
 	CurrentLinkCount  int
-	LatestLabel       string
 	LeafCount         int
 	ContentSize       int64
 	DagSize           int64
-	Links             map[string]string
+	Links             []string
 	AdditionalData    map[string]string
 	StoredProofs      map[string]*ClassicTreeBranch `json:"stored_proofs,omitempty" cbor:"stored_proofs,omitempty"`
 }
 
-// SerializableTransmissionPacket is a minimal version of TransmissionPacket for efficient serialization
 type SerializableTransmissionPacket struct {
 	Leaf       *SerializableDagLeaf
 	ParentHash string
 	Proofs     map[string]*ClassicTreeBranch `json:"proofs,omitempty" cbor:"proofs,omitempty"`
 }
 
-// SerializableBatchedTransmissionPacket is a minimal version of BatchedTransmissionPacket for efficient serialization
 type SerializableBatchedTransmissionPacket struct {
 	Leaves        []*SerializableDagLeaf
 	Relationships map[string]string
-	Proofs        map[string]*ClassicTreeBranch `json:"proofs,omitempty" cbor:"proofs,omitempty"`
 }
 
-// ToSerializable converts a Dag to its serializable form
 func (dag *Dag) ToSerializable() *SerializableDag {
 	serializable := &SerializableDag{
 		Root:  dag.Root,
@@ -59,7 +53,6 @@ func (dag *Dag) ToSerializable() *SerializableDag {
 	return serializable
 }
 
-// FromSerializable reconstructs a Dag from its serializable form
 func FromSerializable(s *SerializableDag) *Dag {
 	dag := &Dag{
 		Root:  s.Root,
@@ -76,16 +69,18 @@ func FromSerializable(s *SerializableDag) *Dag {
 			Content:           sLeaf.Content,
 			ClassicMerkleRoot: sLeaf.ClassicMerkleRoot,
 			CurrentLinkCount:  sLeaf.CurrentLinkCount,
-			Links:             make(map[string]string),
+			Links:             make([]string, 0),
 			AdditionalData:    make(map[string]string),
 			Proofs:            make(map[string]*ClassicTreeBranch),
 		}
 
-		// Copy and sort links
-		dag.Leafs[hash].Links = sortMapByKeys(sLeaf.Links)
+		// Copy links preserving order (CRITICAL: order matters for chunked files!)
+		// Links array order determines chunk reassembly sequence
+		dag.Leafs[hash].Links = make([]string, len(sLeaf.Links))
+		copy(dag.Leafs[hash].Links, sLeaf.Links)
 
 		// Copy and sort additional data
-		dag.Leafs[hash].AdditionalData = sortMapByKeys(sLeaf.AdditionalData)
+		dag.Leafs[hash].AdditionalData = SortMapByKeys(sLeaf.AdditionalData)
 
 		// Copy stored proofs
 		if sLeaf.StoredProofs != nil {
@@ -97,7 +92,6 @@ func FromSerializable(s *SerializableDag) *Dag {
 		// Set root-specific fields
 		if hash == s.Root {
 			dag.Leafs[hash].LeafCount = sLeaf.LeafCount
-			dag.Leafs[hash].LatestLabel = sLeaf.LatestLabel
 			dag.Leafs[hash].ContentSize = sLeaf.ContentSize
 			dag.Leafs[hash].DagSize = sLeaf.DagSize
 		}
@@ -121,8 +115,7 @@ func FromSerializable(s *SerializableDag) *Dag {
 			if len(leaf.Links) > 1 {
 				builder := merkle_tree.CreateTree()
 				for _, link := range leaf.Links {
-					hash := GetHash(link)
-					builder.AddLeaf(hash, hash)
+					builder.AddLeaf(link, link)
 				}
 
 				merkleTree, leafMap, err := builder.Build()
@@ -158,20 +151,21 @@ func (leaf *DagLeaf) ToSerializable() *SerializableDagLeaf {
 		Content:           leaf.Content,
 		ClassicMerkleRoot: leaf.ClassicMerkleRoot,
 		CurrentLinkCount:  leaf.CurrentLinkCount,
-		LatestLabel:       leaf.LatestLabel,
 		LeafCount:         leaf.LeafCount,
 		ContentSize:       leaf.ContentSize,
 		DagSize:           leaf.DagSize,
-		Links:             make(map[string]string),
+		Links:             make([]string, 0),
 		AdditionalData:    make(map[string]string),
 		StoredProofs:      make(map[string]*ClassicTreeBranch),
 	}
 
-	// Copy and sort links
-	serializable.Links = sortMapByKeys(leaf.Links)
+	// Copy links preserving order (CRITICAL: order matters for chunked files!)
+	// Links array order determines chunk reassembly sequence
+	serializable.Links = make([]string, len(leaf.Links))
+	copy(serializable.Links, leaf.Links)
 
 	// Copy and sort additional data
-	serializable.AdditionalData = sortMapByKeys(leaf.AdditionalData)
+	serializable.AdditionalData = SortMapByKeys(leaf.AdditionalData)
 
 	// Copy stored proofs
 	if leaf.Proofs != nil {
@@ -238,20 +232,21 @@ func TransmissionPacketFromSerializable(s *SerializableTransmissionPacket) *Tran
 		Content:           s.Leaf.Content,
 		ClassicMerkleRoot: s.Leaf.ClassicMerkleRoot,
 		CurrentLinkCount:  s.Leaf.CurrentLinkCount,
-		LatestLabel:       s.Leaf.LatestLabel,
 		LeafCount:         s.Leaf.LeafCount,
 		ContentSize:       s.Leaf.ContentSize,
 		DagSize:           s.Leaf.DagSize,
-		Links:             make(map[string]string),
+		Links:             make([]string, 0),
 		AdditionalData:    make(map[string]string),
 		Proofs:            make(map[string]*ClassicTreeBranch),
 	}
 
-	// Copy and sort links
-	leaf.Links = sortMapByKeys(s.Leaf.Links)
+	// Copy and sort links (Links is already an array)
+	leaf.Links = make([]string, len(s.Leaf.Links))
+	copy(leaf.Links, s.Leaf.Links)
+	sort.Strings(leaf.Links)
 
 	// Copy and sort additional data
-	leaf.AdditionalData = sortMapByKeys(s.Leaf.AdditionalData)
+	leaf.AdditionalData = SortMapByKeys(s.Leaf.AdditionalData)
 
 	// Copy stored proofs
 	if s.Leaf.StoredProofs != nil {
@@ -311,7 +306,6 @@ func (packet *BatchedTransmissionPacket) ToSerializable() *SerializableBatchedTr
 	serializable := &SerializableBatchedTransmissionPacket{
 		Leaves:        make([]*SerializableDagLeaf, len(packet.Leaves)),
 		Relationships: make(map[string]string),
-		Proofs:        make(map[string]*ClassicTreeBranch),
 	}
 
 	for i, leaf := range packet.Leaves {
@@ -322,13 +316,6 @@ func (packet *BatchedTransmissionPacket) ToSerializable() *SerializableBatchedTr
 	if packet.Relationships != nil {
 		for k, v := range packet.Relationships {
 			serializable.Relationships[k] = v
-		}
-	}
-
-	// Copy proofs
-	if packet.Proofs != nil {
-		for k, v := range packet.Proofs {
-			serializable.Proofs[k] = v
 		}
 	}
 
@@ -347,18 +334,21 @@ func BatchedTransmissionPacketFromSerializable(s *SerializableBatchedTransmissio
 			Content:           serializableLeaf.Content,
 			ClassicMerkleRoot: serializableLeaf.ClassicMerkleRoot,
 			CurrentLinkCount:  serializableLeaf.CurrentLinkCount,
-			LatestLabel:       serializableLeaf.LatestLabel,
 			LeafCount:         serializableLeaf.LeafCount,
-			Links:             make(map[string]string),
+			ContentSize:       serializableLeaf.ContentSize,
+			DagSize:           serializableLeaf.DagSize,
+			Links:             make([]string, 0),
 			AdditionalData:    make(map[string]string),
 			Proofs:            make(map[string]*ClassicTreeBranch),
 		}
 
-		// Copy and sort links
-		leaves[i].Links = sortMapByKeys(serializableLeaf.Links)
+		// Copy and sort links (Links is already an array)
+		leaves[i].Links = make([]string, len(serializableLeaf.Links))
+		copy(leaves[i].Links, serializableLeaf.Links)
+		sort.Strings(leaves[i].Links)
 
 		// Copy and sort additional data
-		leaves[i].AdditionalData = sortMapByKeys(serializableLeaf.AdditionalData)
+		leaves[i].AdditionalData = SortMapByKeys(serializableLeaf.AdditionalData)
 
 		// Copy stored proofs
 		if serializableLeaf.StoredProofs != nil {
@@ -371,20 +361,12 @@ func BatchedTransmissionPacketFromSerializable(s *SerializableBatchedTransmissio
 	packet := &BatchedTransmissionPacket{
 		Leaves:        leaves,
 		Relationships: make(map[string]string),
-		Proofs:        make(map[string]*ClassicTreeBranch),
 	}
 
 	// Copy relationships
 	if s.Relationships != nil {
 		for k, v := range s.Relationships {
 			packet.Relationships[k] = v
-		}
-	}
-
-	// Copy proofs
-	if s.Proofs != nil {
-		for k, v := range s.Proofs {
-			packet.Proofs[k] = v
 		}
 	}
 

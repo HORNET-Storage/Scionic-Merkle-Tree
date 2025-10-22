@@ -1,9 +1,11 @@
-package dag
+package diff
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/HORNET-Storage/Scionic-Merkle-Tree/dag"
 )
 
 func TestDiffFromNewLeaves(t *testing.T) {
@@ -24,7 +26,7 @@ func TestDiffFromNewLeaves(t *testing.T) {
 	}
 
 	// Create old DAG
-	oldDag, err := CreateDag(dir1, false)
+	oldDag, err := dag.CreateDag(dir1, false)
 	if err != nil {
 		t.Fatalf("Failed to create old DAG: %v", err)
 	}
@@ -35,13 +37,13 @@ func TestDiffFromNewLeaves(t *testing.T) {
 	}
 
 	// Create new DAG
-	newDag, err := CreateDag(dir1, false)
+	newDag, err := dag.CreateDag(dir1, false)
 	if err != nil {
 		t.Fatalf("Failed to create new DAG: %v", err)
 	}
 
 	// Use DiffFromNewLeaves
-	diff, err := oldDag.DiffFromNewLeaves(newDag.Leafs)
+	diff, err := DiffFromNewLeaves(oldDag, newDag.Leafs)
 	if err != nil {
 		t.Fatalf("Failed to create diff from new leaves: %v", err)
 	}
@@ -84,18 +86,18 @@ func TestGetAddedLeaves(t *testing.T) {
 		t.Fatalf("Failed to write file: %v", err)
 	}
 
-	dag1, err := CreateDag(dir1, false)
+	dag1, err := dag.CreateDag(dir1, false)
 	if err != nil {
 		t.Fatalf("Failed to create first DAG: %v", err)
 	}
 
-	dag2, err := CreateDag(dir2, false)
+	dag2, err := dag.CreateDag(dir2, false)
 	if err != nil {
 		t.Fatalf("Failed to create second DAG: %v", err)
 	}
 
 	// Create diff
-	diff, err := dag1.Diff(dag2)
+	diff, err := Diff(dag1, dag2)
 	if err != nil {
 		t.Fatalf("Failed to create diff: %v", err)
 	}
@@ -150,18 +152,18 @@ func TestGetRemovedLeaves(t *testing.T) {
 		t.Fatalf("Failed to write file: %v", err)
 	}
 
-	dag1, err := CreateDag(dir1, false)
+	dag1, err := dag.CreateDag(dir1, false)
 	if err != nil {
 		t.Fatalf("Failed to create first DAG: %v", err)
 	}
 
-	dag2, err := CreateDag(dir2, false)
+	dag2, err := dag.CreateDag(dir2, false)
 	if err != nil {
 		t.Fatalf("Failed to create second DAG: %v", err)
 	}
 
 	// Create diff
-	diff, err := dag1.Diff(dag2)
+	diff, err := Diff(dag1, dag2)
 	if err != nil {
 		t.Fatalf("Failed to create diff: %v", err)
 	}
@@ -205,7 +207,7 @@ func TestApplyToDAG(t *testing.T) {
 	}
 
 	// Create old DAG
-	oldDag, err := CreateDag(dir1, false)
+	oldDag, err := dag.CreateDag(dir1, false)
 	if err != nil {
 		t.Fatalf("Failed to create old DAG: %v", err)
 	}
@@ -218,7 +220,7 @@ func TestApplyToDAG(t *testing.T) {
 	}
 
 	// Create new DAG
-	newDag, err := CreateDag(dir1, false)
+	newDag, err := dag.CreateDag(dir1, false)
 	if err != nil {
 		t.Fatalf("Failed to create new DAG: %v", err)
 	}
@@ -226,7 +228,7 @@ func TestApplyToDAG(t *testing.T) {
 	newLeafCount := len(newDag.Leafs)
 
 	// Create diff
-	diff, err := oldDag.Diff(newDag)
+	diff, err := Diff(oldDag, newDag)
 	if err != nil {
 		t.Fatalf("Failed to create diff: %v", err)
 	}
@@ -244,22 +246,20 @@ func TestApplyToDAG(t *testing.T) {
 
 	// Verify all leaves from new DAG exist in reconstructed DAG
 	for newHash, newLeaf := range newDag.Leafs {
-		newBareHash := StripLabel(newHash)
 		found := false
 		for reconHash, reconLeaf := range reconstructedDag.Leafs {
-			reconBareHash := StripLabel(reconHash)
-			if reconBareHash == newBareHash {
+			if reconHash == newHash {
 				found = true
 				// Verify the leaf content matches
 				if reconLeaf.ItemName != newLeaf.ItemName {
 					t.Errorf("Leaf %s has different ItemName: got %s, expected %s",
-						newBareHash, reconLeaf.ItemName, newLeaf.ItemName)
+						newHash, reconLeaf.ItemName, newLeaf.ItemName)
 				}
 				break
 			}
 		}
 		if !found {
-			t.Errorf("Leaf %s from new DAG not found in reconstructed DAG", newBareHash)
+			t.Errorf("Leaf %s from new DAG not found in reconstructed DAG", newHash)
 		}
 	}
 
@@ -302,39 +302,54 @@ func TestCreatePartialDAGFromAdded(t *testing.T) {
 		t.Fatalf("Failed to write file: %v", err)
 	}
 
-	dag1, err := CreateDag(dir1, false)
+	dag1, err := dag.CreateDag(dir1, false)
 	if err != nil {
 		t.Fatalf("Failed to create first DAG: %v", err)
 	}
 
-	dag2, err := CreateDag(dir2, false)
+	dag2, err := dag.CreateDag(dir2, false)
 	if err != nil {
 		t.Fatalf("Failed to create second DAG: %v", err)
 	}
 
 	// Create diff
-	diff, err := dag1.Diff(dag2)
+	diff, err := Diff(dag1, dag2)
 	if err != nil {
 		t.Fatalf("Failed to create diff: %v", err)
 	}
 
-	// Create partial DAG from added leaves
-	partialDag, err := diff.CreatePartialDag()
+	// Create partial DAG from added leaves using the full new DAG
+	partialDag, err := diff.CreatePartialDag(dag2)
 	if err != nil {
 		t.Fatalf("Failed to create partial DAG: %v", err)
 	}
 
-	// Verify partial DAG has only added leaves
+	// Verify partial DAG contains at least the added file leaves
+	// Note: The partial DAG may have MORE leaves than just the added leaves
+	// because it includes verification paths and intermediate directories with Merkle proofs
 	addedLeaves := diff.GetAddedLeaves()
-	if len(partialDag.Leafs) != len(addedLeaves) {
-		t.Errorf("Partial DAG has %d leaves, expected %d", len(partialDag.Leafs), len(addedLeaves))
+
+	// Count added file leaves
+	addedFileCount := 0
+	for _, leaf := range addedLeaves {
+		if leaf.Type == dag.FileLeafType {
+			addedFileCount++
+		}
 	}
 
-	// Verify all leaves in partial DAG are in added leaves
-	for partialHash := range partialDag.Leafs {
-		partialBareHash := StripLabel(partialHash)
-		if _, exists := addedLeaves[partialBareHash]; !exists {
-			t.Errorf("Partial DAG contains leaf %s that's not in added leaves", partialBareHash)
+	// Verify all added file leaves are in the partial DAG
+	for hash, addedLeaf := range addedLeaves {
+		if addedLeaf.Type == dag.FileLeafType {
+			found := false
+			for partialHash := range partialDag.Leafs {
+				if partialHash == hash {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("Partial DAG missing added file leaf %s (name: %s)", hash[:16], addedLeaf.ItemName)
+			}
 		}
 	}
 
@@ -380,7 +395,7 @@ func TestCompleteWorkflow_NetworkTransmission(t *testing.T) {
 		t.Fatalf("Failed to write file: %v", err)
 	}
 
-	senderOldDag, err := CreateDag(oldDir, false)
+	senderOldDag, err := dag.CreateDag(oldDir, false)
 	if err != nil {
 		t.Fatalf("Failed to create sender old DAG: %v", err)
 	}
@@ -390,13 +405,13 @@ func TestCompleteWorkflow_NetworkTransmission(t *testing.T) {
 		t.Fatalf("Failed to write file: %v", err)
 	}
 
-	senderNewDag, err := CreateDag(oldDir, false)
+	senderNewDag, err := dag.CreateDag(oldDir, false)
 	if err != nil {
 		t.Fatalf("Failed to create sender new DAG: %v", err)
 	}
 
 	// Sender creates diff
-	diff, err := senderOldDag.Diff(senderNewDag)
+	diff, err := Diff(senderOldDag, senderNewDag)
 	if err != nil {
 		t.Fatalf("Failed to create diff: %v", err)
 	}
@@ -404,8 +419,8 @@ func TestCompleteWorkflow_NetworkTransmission(t *testing.T) {
 	t.Logf("Sender created diff: Added=%d, Removed=%d",
 		diff.Summary.Added, diff.Summary.Removed)
 
-	// Sender creates partial DAG for transmission (only added leaves)
-	partialDag, err := diff.CreatePartialDag()
+	// Sender creates partial DAG for transmission (only added leaves with verification paths)
+	partialDag, err := diff.CreatePartialDag(senderNewDag)
 	if err != nil {
 		t.Fatalf("Failed to create partial DAG: %v", err)
 	}
@@ -425,7 +440,7 @@ func TestCompleteWorkflow_NetworkTransmission(t *testing.T) {
 	newLeaves := partialDag.Leafs
 
 	// Receiver creates diff from new leaves
-	receiverDiff, err := receiverOldDag.DiffFromNewLeaves(newLeaves)
+	receiverDiff, err := DiffFromNewLeaves(receiverOldDag, newLeaves)
 	if err != nil {
 		t.Fatalf("Failed to create receiver diff: %v", err)
 	}
@@ -449,17 +464,15 @@ func TestCompleteWorkflow_NetworkTransmission(t *testing.T) {
 	// labels are recomputed, but all the actual content should be present.
 
 	// Collect all bare hashes from sender's new DAG
-	senderBareHashes := make(map[string]*DagLeaf)
+	senderBareHashes := make(map[string]*dag.DagLeaf)
 	for hash, leaf := range senderNewDag.Leafs {
-		bareHash := StripLabel(hash)
-		senderBareHashes[bareHash] = leaf
+		senderBareHashes[hash] = leaf
 	}
 
 	// Collect all bare hashes from receiver's new DAG
-	receiverBareHashes := make(map[string]*DagLeaf)
+	receiverBareHashes := make(map[string]*dag.DagLeaf)
 	for hash, leaf := range receiverNewDag.Leafs {
-		bareHash := StripLabel(hash)
-		receiverBareHashes[bareHash] = leaf
+		receiverBareHashes[hash] = leaf
 	}
 
 	// Verify all content from sender exists in receiver
@@ -501,16 +514,24 @@ func TestApplyToDAG_EmptyDiff(t *testing.T) {
 	}
 	defer os.RemoveAll(testDir)
 
+	// Create deterministic input directory
 	dir := filepath.Join(testDir, "input")
-	GenerateDummyDirectory(dir, 1, 2, 1, 1)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("Failed to create input directory: %v", err)
+	}
 
-	dag, err := CreateDag(dir, false)
+	// Create a simple file
+	if err := os.WriteFile(filepath.Join(dir, "test.txt"), []byte("test content"), 0644); err != nil {
+		t.Fatalf("Failed to write test file: %v", err)
+	}
+
+	dag, err := dag.CreateDag(dir, false)
 	if err != nil {
 		t.Fatalf("Failed to create DAG: %v", err)
 	}
 
 	// Create empty diff (compare dag with itself)
-	diff, err := dag.Diff(dag)
+	diff, err := Diff(dag, dag)
 	if err != nil {
 		t.Fatalf("Failed to create diff: %v", err)
 	}
@@ -535,22 +556,30 @@ func TestCreatePartialDAGFromAdded_NoAdded(t *testing.T) {
 	}
 	defer os.RemoveAll(testDir)
 
+	// Create deterministic input directory
 	dir := filepath.Join(testDir, "input")
-	GenerateDummyDirectory(dir, 1, 2, 1, 1)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("Failed to create input directory: %v", err)
+	}
 
-	dag, err := CreateDag(dir, false)
+	// Create a simple file
+	if err := os.WriteFile(filepath.Join(dir, "test.txt"), []byte("test content"), 0644); err != nil {
+		t.Fatalf("Failed to write test file: %v", err)
+	}
+
+	dag, err := dag.CreateDag(dir, false)
 	if err != nil {
 		t.Fatalf("Failed to create DAG: %v", err)
 	}
 
 	// Create diff with no additions
-	diff, err := dag.Diff(dag)
+	diff, err := Diff(dag, dag)
 	if err != nil {
 		t.Fatalf("Failed to create diff: %v", err)
 	}
 
-	// Try to create partial DAG from empty additions
-	_, err = diff.CreatePartialDag()
+	// Try to create partial DAG from empty additions (pass the same DAG since there are no changes)
+	_, err = diff.CreatePartialDag(dag)
 	if err == nil {
 		t.Error("Expected error when creating partial DAG with no added leaves")
 	}
