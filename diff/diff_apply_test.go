@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/HORNET-Storage/Scionic-Merkle-Tree/dag"
+	"github.com/HORNET-Storage/Scionic-Merkle-Tree/v2/dag"
 )
 
 func TestDiffFromNewLeaves(t *testing.T) {

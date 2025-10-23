@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/HORNET-Storage/Scionic-Merkle-Tree/dag"
+	"github.com/HORNET-Storage/Scionic-Merkle-Tree/v2/dag"
 )
 
 // TestFixture represents a deterministic test data structure

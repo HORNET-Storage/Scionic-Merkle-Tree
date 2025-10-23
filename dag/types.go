@@ -4,7 +4,7 @@ import (
 	"io/fs"
 	"sync"
 
-	"github.com/HORNET-Storage/Scionic-Merkle-Tree/merkletree"
+	"github.com/HORNET-Storage/Scionic-Merkle-Tree/v2/merkletree"
 )
 
 const DefaultChunkSize = 2048 * 1024 // 2MB

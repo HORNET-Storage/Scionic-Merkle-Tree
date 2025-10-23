@@ -8,8 +8,8 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/HORNET-Storage/Scionic-Merkle-Tree/dag"
-	"github.com/HORNET-Storage/Scionic-Merkle-Tree/testutil"
+	"github.com/HORNET-Storage/Scionic-Merkle-Tree/v2/dag"
+	"github.com/HORNET-Storage/Scionic-Merkle-Tree/v2/testutil"
 	cbor "github.com/fxamacker/cbor/v2"
 )
 

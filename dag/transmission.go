@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sort"
 
-	merkle_tree "github.com/HORNET-Storage/Scionic-Merkle-Tree/tree"
+	merkle_tree "github.com/HORNET-Storage/Scionic-Merkle-Tree/v2/tree"
 )
 
 // getPartialLeafSequence packages partial DAG leaves for transmission in BFS order

@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/HORNET-Storage/Scionic-Merkle-Tree/dag"
+	"github.com/HORNET-Storage/Scionic-Merkle-Tree/v2/dag"
 )
 
 // TestParallelDeterminism verifies that parallel and sequential DAG building

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/HORNET-Storage/Scionic-Merkle-Tree/dag"
+	"github.com/HORNET-Storage/Scionic-Merkle-Tree/v2/dag"
 )
 
 func TestOutOfRangeLeafRequests(t *testing.T) {

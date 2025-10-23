@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	//mt "github.com/txaty/go-merkletree"
-	mt "github.com/HORNET-Storage/Scionic-Merkle-Tree/merkletree"
+	mt "github.com/HORNET-Storage/Scionic-Merkle-Tree/v2/merkletree"
 )
 
 type TreeContent struct {

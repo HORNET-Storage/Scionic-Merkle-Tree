@@ -1,4 +1,4 @@
-module github.com/HORNET-Storage/Scionic-Merkle-Tree
+module github.com/HORNET-Storage/Scionic-Merkle-Tree/v2
 
 go 1.19
 

@@ -4,7 +4,7 @@ import (
 	"sort"
 	"testing"
 
-	mt "github.com/HORNET-Storage/Scionic-Merkle-Tree/merkletree"
+	mt "github.com/HORNET-Storage/Scionic-Merkle-Tree/v2/merkletree"
 )
 
 func TestBasicTreeOperations(t *testing.T) {

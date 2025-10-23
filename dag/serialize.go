@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"sort"
 
-	merkle_tree "github.com/HORNET-Storage/Scionic-Merkle-Tree/tree"
+	merkle_tree "github.com/HORNET-Storage/Scionic-Merkle-Tree/v2/tree"
 	cbor "github.com/fxamacker/cbor/v2"
 )
 

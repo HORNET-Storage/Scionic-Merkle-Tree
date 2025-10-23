@@ -3,8 +3,8 @@ package tests
 import (
 	"testing"
 
-	"github.com/HORNET-Storage/Scionic-Merkle-Tree/dag"
-	"github.com/HORNET-Storage/Scionic-Merkle-Tree/testutil"
+	"github.com/HORNET-Storage/Scionic-Merkle-Tree/v2/dag"
+	"github.com/HORNET-Storage/Scionic-Merkle-Tree/v2/testutil"
 )
 
 // TestGetPartial tests creating partial DAGs from full DAGs with multiple files

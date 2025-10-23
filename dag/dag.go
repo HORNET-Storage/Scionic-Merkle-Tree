@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	merkle_tree "github.com/HORNET-Storage/Scionic-Merkle-Tree/tree"
+	merkle_tree "github.com/HORNET-Storage/Scionic-Merkle-Tree/v2/tree"
 )
 
 type fileInfoDirEntry struct {

@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/HORNET-Storage/Scionic-Merkle-Tree/dag"
-	"github.com/HORNET-Storage/Scionic-Merkle-Tree/testutil"
+	"github.com/HORNET-Storage/Scionic-Merkle-Tree/v2/dag"
+	"github.com/HORNET-Storage/Scionic-Merkle-Tree/v2/testutil"
 )
 
 // TestSerialization tests serialization and deserialization of DAGs in various formats

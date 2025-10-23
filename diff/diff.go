@@ -3,7 +3,7 @@ package diff
 import (
 	"fmt"
 
-	"github.com/HORNET-Storage/Scionic-Merkle-Tree/dag"
+	"github.com/HORNET-Storage/Scionic-Merkle-Tree/v2/dag"
 )
 
 type DiffType string

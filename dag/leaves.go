@@ -8,11 +8,11 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/HORNET-Storage/Scionic-Merkle-Tree/merkletree"
+	"github.com/HORNET-Storage/Scionic-Merkle-Tree/v2/merkletree"
 
 	cbor "github.com/fxamacker/cbor/v2"
 
-	merkle_tree "github.com/HORNET-Storage/Scionic-Merkle-Tree/tree"
+	merkle_tree "github.com/HORNET-Storage/Scionic-Merkle-Tree/v2/tree"
 
 	"github.com/ipfs/go-cid"
 	mc "github.com/multiformats/go-multicodec"
