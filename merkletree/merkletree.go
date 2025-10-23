@@ -149,16 +149,13 @@ type Proof struct {
 	Path     uint32   // Path variable indicating whether the neighbor is on the left or right.
 }
 
-// sha256Digest is the reusable digest for DefaultHashFunc.
-// It is used to avoid creating a new hash digest for every call to DefaultHashFunc.
-var sha256Digest = sha256.New()
-
 // DefaultHashFunc is the default hash function used when no user-specified hash function is provided.
-// It implements the SHA256 hash function and reuses sha256Digest to reduce memory allocations.
+// It implements the SHA256 hash function and creates a new hash digest for each call to ensure
+// thread-safety in concurrent environments.
 func DefaultHashFunc(data []byte) ([]byte, error) {
-	defer sha256Digest.Reset()
-	sha256Digest.Write(data)
-	return sha256Digest.Sum(make([]byte, 0, sha256Digest.Size())), nil
+	digest := sha256.New()
+	digest.Write(data)
+	return digest.Sum(make([]byte, 0, digest.Size())), nil
 }
 
 // DefaultHashFuncParallel is the default hash function used by parallel algorithms when no user-specified

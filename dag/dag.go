@@ -924,9 +924,7 @@ func (d *Dag) IterateDag(processLeaf func(leaf *DagLeaf, parent *DagLeaf) error)
 		}
 
 		childHashes := []string{}
-		for _, childHash := range leaf.Links {
-			childHashes = append(childHashes, childHash)
-		}
+		childHashes = append(childHashes, leaf.Links...)
 
 		sort.Slice(childHashes, func(i, j int) bool {
 			numI, _ := strconv.Atoi(strings.Split(childHashes[i], ":")[0])
