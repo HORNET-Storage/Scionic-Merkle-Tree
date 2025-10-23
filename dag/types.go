@@ -122,9 +122,10 @@ type DagBuilderConfig struct {
 	// 0 = use runtime.NumCPU() (auto-detect based on available cores)
 	// -1 = unlimited workers (not recommended, may overwhelm system)
 	// >0 = use exactly this many workers
-	MaxWorkers    int  // Parallel only, 0=auto-detect
-	TimestampRoot bool // Add timestamp to root
-	Processor     LeafProcessor
+	MaxWorkers     int  // Parallel only, 0=auto-detect
+	TimestampRoot  bool // Add timestamp to root
+	AdditionalData map[string]string
+	Processor      LeafProcessor
 }
 
 func DefaultConfig() *DagBuilderConfig {
@@ -132,6 +133,7 @@ func DefaultConfig() *DagBuilderConfig {
 		EnableParallel: false,
 		MaxWorkers:     0,
 		TimestampRoot:  false,
+		AdditionalData: map[string]string{},
 		Processor:      nil,
 	}
 }
@@ -141,6 +143,7 @@ func ParallelConfig() *DagBuilderConfig {
 		EnableParallel: true,
 		MaxWorkers:     0,
 		TimestampRoot:  false,
+		AdditionalData: map[string]string{},
 		Processor:      nil,
 	}
 }
@@ -150,6 +153,7 @@ func ParallelConfigWithWorkers(workers int) *DagBuilderConfig {
 		EnableParallel: true,
 		MaxWorkers:     workers,
 		TimestampRoot:  false,
+		AdditionalData: map[string]string{},
 		Processor:      nil,
 	}
 }

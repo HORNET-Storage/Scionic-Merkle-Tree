@@ -85,7 +85,7 @@ func CreateDagWithConfig(path string, config *DagBuilderConfig) (*Dag, error) {
 		config = DefaultConfig()
 	}
 
-	var additionalData map[string]string = nil
+	var additionalData map[string]string = config.AdditionalData
 	if config.TimestampRoot {
 		currentTime := time.Now().UTC()
 		timeString := currentTime.Format(time.RFC3339)
