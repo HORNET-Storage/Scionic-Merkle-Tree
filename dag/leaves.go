@@ -451,7 +451,18 @@ func (leaf *DagLeaf) VerifyRootLeaf(dag *Dag) error {
 		}
 	}
 
-	if isFullDag {
+	// If any leaf has a content hash but the content field is empty, we can't verify size
+	hasContentMissing := false
+	if isFullDag && dag != nil {
+		for _, l := range dag.Leafs {
+			if len(l.ContentHash) > 0 && l.Content == nil {
+				hasContentMissing = true
+				break
+			}
+		}
+	}
+
+	if isFullDag && !hasContentMissing {
 		for _, dagLeaf := range dag.Leafs {
 			if dagLeaf.Content != nil {
 				calculatedContentSize += int64(len(dagLeaf.Content))
