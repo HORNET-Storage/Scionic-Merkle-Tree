@@ -7,7 +7,6 @@ on:
     branches: [ "main" ]
 
 jobs:
-
   build:
     runs-on: ubuntu-latest
     steps:
@@ -21,10 +20,16 @@ jobs:
     - name: Build
       run: go build -v ./...
 
-    - name: Test
-      run: go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
+    - name: Test (with cross-package coverage)
+      run: |
+        go test ./... \
+          -v \
+          -race \
+          -covermode=atomic \
+          -coverpkg=./... \
+          -coverprofile=coverage.txt
 
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v3
       env:
-        CODECOV_TOKEN: ${{secrets.CODECOV_TOKEN}}
+        CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
