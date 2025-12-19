@@ -2,6 +2,7 @@ package dag
 
 import (
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -300,38 +301,59 @@ func processFile(entry fs.DirEntry, fullPath string, path *string, dag *DagBuild
 	builder := CreateDagLeafBuilder(relPath)
 	builder.SetType(FileLeafType)
 
-	fileData, err := os.ReadFile(fullPath)
-	if err != nil {
-		return nil, err
+	// Use streaming I/O to avoid loading entire file into memory
+	// We process chunks incrementally, only keeping one chunk in memory at a time
+	var singleChunk []byte
+	chunkCount := 0
+
+	streamErr := streamFileChunks(fullPath, ChunkSize, func(chunk []byte, index int) error {
+		chunkCount++
+		if chunkCount == 1 {
+			// Store first chunk - might be the only one
+			singleChunk = chunk
+			return nil
+		}
+
+		// We have multiple chunks - need to process them as child leaves
+		if chunkCount == 2 && singleChunk != nil {
+			// Process the first chunk we stored earlier
+			chunkEntryPath := filepath.Join(relPath, "0")
+			chunkBuilder := CreateDagLeafBuilder(chunkEntryPath)
+			chunkBuilder.SetType(ChunkLeafType)
+			chunkBuilder.SetData(singleChunk)
+
+			chunkLeaf, err := chunkBuilder.BuildLeaf(nil)
+			if err != nil {
+				return err
+			}
+
+			builder.AddLink(chunkLeaf.Hash)
+			dag.AddLeaf(chunkLeaf, nil)
+			singleChunk = nil // Release memory
+		}
+
+		// Process current chunk
+		chunkEntryPath := filepath.Join(relPath, strconv.Itoa(index))
+		chunkBuilder := CreateDagLeafBuilder(chunkEntryPath)
+		chunkBuilder.SetType(ChunkLeafType)
+		chunkBuilder.SetData(chunk)
+
+		chunkLeaf, err := chunkBuilder.BuildLeaf(nil)
+		if err != nil {
+			return err
+		}
+
+		builder.AddLink(chunkLeaf.Hash)
+		dag.AddLeaf(chunkLeaf, nil)
+		return nil
+	})
+	if streamErr != nil {
+		return nil, streamErr
 	}
 
-	builder.SetType(FileLeafType)
-
-	if ChunkSize <= 0 {
-		builder.SetData(fileData)
-	} else {
-		fileChunks := chunkFile(fileData, ChunkSize)
-
-		if len(fileChunks) == 1 {
-			builder.SetData(fileChunks[0])
-		} else {
-			for i, chunk := range fileChunks {
-				// Use path-based naming for chunks to maintain compatibility
-				chunkEntryPath := filepath.Join(relPath, strconv.Itoa(i))
-				chunkBuilder := CreateDagLeafBuilder(chunkEntryPath)
-
-				chunkBuilder.SetType(ChunkLeafType)
-				chunkBuilder.SetData(chunk)
-
-				chunkLeaf, err := chunkBuilder.BuildLeaf(nil)
-				if err != nil {
-					return nil, err
-				}
-
-				builder.AddLink(chunkLeaf.Hash)
-				dag.AddLeaf(chunkLeaf, nil)
-			}
-		}
+	// If only one chunk, set it as data directly
+	if chunkCount == 1 && singleChunk != nil {
+		builder.SetData(singleChunk)
 	}
 
 	result, err = builder.BuildLeaf(additionalData)
@@ -342,23 +364,57 @@ func processFile(entry fs.DirEntry, fullPath string, path *string, dag *DagBuild
 	return result, nil
 }
 
-func chunkFile(fileData []byte, chunkSize int) [][]byte {
-	var chunks [][]byte
-	fileSize := len(fileData)
+// streamFileChunks reads a file in chunks using streaming I/O, calling the callback for each chunk.
+// This is more memory efficient than reading the entire file into memory first.
+// If chunkSize <= 0, reads the entire file as a single chunk.
+func streamFileChunks(fullPath string, chunkSize int, callback func(chunk []byte, index int) error) error {
+	file, err := os.Open(fullPath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
 
+	// If no chunk size specified, read entire file (fallback behavior)
 	if chunkSize <= 0 {
-		return [][]byte{fileData}
-	}
-
-	for i := 0; i < fileSize; i += chunkSize {
-		end := i + chunkSize
-		if end > fileSize {
-			end = fileSize
+		data, err := io.ReadAll(file)
+		if err != nil {
+			return err
 		}
-		chunks = append(chunks, fileData[i:end])
+		return callback(data, 0)
 	}
 
-	return chunks
+	// Stream file in chunks
+	buffer := make([]byte, chunkSize)
+	index := 0
+
+	for {
+		n, err := io.ReadFull(file, buffer)
+		if err == io.EOF {
+			break
+		}
+		if err == io.ErrUnexpectedEOF {
+			// Partial read - this is the last chunk
+			chunk := make([]byte, n)
+			copy(chunk, buffer[:n])
+			if err := callback(chunk, index); err != nil {
+				return err
+			}
+			break
+		}
+		if err != nil {
+			return err
+		}
+
+		// Full chunk read - make a copy since we reuse the buffer
+		chunk := make([]byte, n)
+		copy(chunk, buffer[:n])
+		if err := callback(chunk, index); err != nil {
+			return err
+		}
+		index++
+	}
+
+	return nil
 }
 
 // processEntryResult holds the result of processing a single entry in parallel
@@ -546,36 +602,59 @@ func processFileParallel(entry fs.DirEntry, fullPath string, path *string, dag *
 	builder := CreateDagLeafBuilder(relPath)
 	builder.SetType(FileLeafType)
 
-	fileData, err := os.ReadFile(fullPath)
-	if err != nil {
-		return nil, err
+	// Use streaming I/O to avoid loading entire file into memory
+	// We process chunks incrementally, only keeping one chunk in memory at a time
+	var singleChunk []byte
+	chunkCount := 0
+
+	streamErr := streamFileChunks(fullPath, ChunkSize, func(chunk []byte, index int) error {
+		chunkCount++
+		if chunkCount == 1 {
+			// Store first chunk - might be the only one
+			singleChunk = chunk
+			return nil
+		}
+
+		// We have multiple chunks - need to process them as child leaves
+		if chunkCount == 2 && singleChunk != nil {
+			// Process the first chunk we stored earlier
+			// Use simple numeric string as ItemName for chunks
+			chunkBuilder := CreateDagLeafBuilder("0")
+			chunkBuilder.SetType(ChunkLeafType)
+			chunkBuilder.SetData(singleChunk)
+
+			chunkLeaf, err := chunkBuilder.BuildLeaf(nil)
+			if err != nil {
+				return err
+			}
+
+			builder.AddLink(chunkLeaf.Hash)
+			dag.AddLeafSafe(chunkLeaf, nil)
+			singleChunk = nil // Release memory
+		}
+
+		// Process current chunk
+		chunkItemName := strconv.Itoa(index)
+		chunkBuilder := CreateDagLeafBuilder(chunkItemName)
+		chunkBuilder.SetType(ChunkLeafType)
+		chunkBuilder.SetData(chunk)
+
+		chunkLeaf, err := chunkBuilder.BuildLeaf(nil)
+		if err != nil {
+			return err
+		}
+
+		builder.AddLink(chunkLeaf.Hash)
+		dag.AddLeafSafe(chunkLeaf, nil)
+		return nil
+	})
+	if streamErr != nil {
+		return nil, streamErr
 	}
 
-	if ChunkSize <= 0 {
-		builder.SetData(fileData)
-	} else {
-		fileChunks := chunkFile(fileData, ChunkSize)
-
-		if len(fileChunks) == 1 {
-			builder.SetData(fileChunks[0])
-		} else {
-			for i, chunk := range fileChunks {
-				// Use simple numeric string as ItemName for chunks
-				// This makes alphabetical sorting work naturally: "0", "1", "2", ...
-				chunkItemName := strconv.Itoa(i)
-				chunkBuilder := CreateDagLeafBuilder(chunkItemName)
-				chunkBuilder.SetType(ChunkLeafType)
-				chunkBuilder.SetData(chunk)
-
-				chunkLeaf, err := chunkBuilder.BuildLeaf(nil)
-				if err != nil {
-					return nil, err
-				}
-
-				builder.AddLink(chunkLeaf.Hash)
-				dag.AddLeafSafe(chunkLeaf, nil)
-			}
-		}
+	// If only one chunk, set it as data directly
+	if chunkCount == 1 && singleChunk != nil {
+		builder.SetData(singleChunk)
 	}
 
 	result, err = builder.BuildLeaf(additionalData)
