@@ -402,8 +402,9 @@ func (d *Dag) finalizeBatch(batch *BatchedTransmissionPacket, parentsInBatch map
 			continue
 		}
 
-		// Count total children of this parent
-		totalChildren := len(originalParent.Links)
+		// Count total children of this parent using CurrentLinkCount
+		// (Links may be pruned in partial DAGs, but CurrentLinkCount preserves original count)
+		totalChildren := originalParent.CurrentLinkCount
 
 		// Skip if parent has no children or only one child (no proofs needed)
 		if totalChildren <= 1 {

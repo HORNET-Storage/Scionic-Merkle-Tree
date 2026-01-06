@@ -769,3 +769,155 @@ func TestDirectMerkleProofValidation(t *testing.T) {
 
 	t.Log("Direct Merkle proof validation test completed")
 }
+
+// TestPrunedLinksOptimization tests that partial DAGs with pruned links still work correctly.
+func TestPrunedLinksOptimization(t *testing.T) {
+	testDir, err := os.MkdirTemp("", "dag_pruned_links_test_*")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer os.RemoveAll(testDir)
+
+	// Create a directory with 5 files - we'll request only 2
+	inputDir := filepath.Join(testDir, "input")
+	if err := os.MkdirAll(inputDir, 0755); err != nil {
+		t.Fatalf("Failed to create input directory: %v", err)
+	}
+
+	fileNames := []string{"file_a.txt", "file_b.txt", "file_c.txt", "file_d.txt", "file_e.txt"}
+	for i, name := range fileNames {
+		filePath := filepath.Join(inputDir, name)
+		content := make([]byte, 512)
+		for j := range content {
+			content[j] = byte((i*512 + j) % 256)
+		}
+		if err := os.WriteFile(filePath, content, 0644); err != nil {
+			t.Fatalf("Failed to write file: %v", err)
+		}
+	}
+
+	// Create original DAG
+	originalDag, err := dag.CreateDag(inputDir, true)
+	if err != nil {
+		t.Fatalf("Failed to create DAG: %v", err)
+	}
+
+	if err := originalDag.Verify(); err != nil {
+		t.Fatalf("Original DAG verification failed: %v", err)
+	}
+
+	// Find file leaf hashes (children of root)
+	rootLeaf := originalDag.Leafs[originalDag.Root]
+	if rootLeaf == nil {
+		t.Fatal("Root leaf not found")
+	}
+
+	if len(rootLeaf.Links) < 5 {
+		t.Fatalf("Expected at least 5 children in root, got %d", len(rootLeaf.Links))
+	}
+
+	// Get partial DAG for only first 2 files
+	requestedHashes := rootLeaf.Links[:2]
+	t.Logf("Requesting partial DAG for %d of %d children", len(requestedHashes), len(rootLeaf.Links))
+
+	partialDag, err := originalDag.GetPartial(requestedHashes, false)
+	if err != nil {
+		t.Fatalf("Failed to get partial DAG: %v", err)
+	}
+
+	// Verify partial DAG state before pruning
+	partialRoot := partialDag.Leafs[partialDag.Root]
+	if partialRoot == nil {
+		t.Fatal("Partial DAG root not found")
+	}
+
+	t.Logf("Before pruning: CurrentLinkCount=%d, len(Links)=%d, len(Proofs)=%d",
+		partialRoot.CurrentLinkCount, len(partialRoot.Links), len(partialRoot.Proofs))
+
+	// CurrentLinkCount should reflect original count (5)
+	if partialRoot.CurrentLinkCount != 5 {
+		t.Errorf("Expected CurrentLinkCount=5, got %d", partialRoot.CurrentLinkCount)
+	}
+
+	// Proofs should exist for requested children
+	if len(partialRoot.Proofs) < 2 {
+		t.Errorf("Expected at least 2 proofs in partial root, got %d", len(partialRoot.Proofs))
+	}
+
+	// Now simulate what pruneLinks=true does: remove links not in partial DAG
+	prunedLinks := make([]string, 0)
+	for _, linkHash := range partialRoot.Links {
+		if _, exists := partialDag.Leafs[linkHash]; exists {
+			prunedLinks = append(prunedLinks, linkHash)
+		}
+	}
+	partialRoot.Links = prunedLinks
+
+	t.Logf("After pruning: CurrentLinkCount=%d, len(Links)=%d, len(Proofs)=%d",
+		partialRoot.CurrentLinkCount, len(partialRoot.Links), len(partialRoot.Proofs))
+
+	// Links should now be pruned to 2
+	if len(partialRoot.Links) != 2 {
+		t.Errorf("Expected len(Links)=2 after pruning, got %d", len(partialRoot.Links))
+	}
+
+	// CurrentLinkCount should still be 5 (original count preserved)
+	if partialRoot.CurrentLinkCount != 5 {
+		t.Errorf("CurrentLinkCount should remain 5 after pruning, got %d", partialRoot.CurrentLinkCount)
+	}
+
+	// Set a batch size that puts all leaves in one batch
+	dag.SetBatchSize(100 * 1024)
+	defer dag.SetDefaultBatchSize()
+
+	// Get batched sequence - this is where the bug manifested
+	sequence := partialDag.GetBatchedLeafSequence()
+
+	if len(sequence) == 0 {
+		t.Fatal("No batched transmission packets generated")
+	}
+
+	t.Logf("Generated %d batched transmission packets", len(sequence))
+
+	// Find the root in the first batch and check its proofs
+	var rootInBatch *dag.DagLeaf
+	for _, leaf := range sequence[0].Leaves {
+		if leaf.Hash == partialDag.Root {
+			rootInBatch = leaf
+			break
+		}
+	}
+
+	if rootInBatch == nil {
+		t.Fatal("Root not found in first batch")
+	}
+
+	t.Logf("Root in batch: CurrentLinkCount=%d, len(Links)=%d, len(Proofs)=%d",
+		rootInBatch.CurrentLinkCount, len(rootInBatch.Links), len(rootInBatch.Proofs))
+
+	if rootInBatch.Proofs == nil || len(rootInBatch.Proofs) == 0 {
+		t.Fatalf("Expected proofs to be preserved for partial DAG with pruned links")
+	}
+
+	t.Logf("SUCCESS: Root has %d proofs preserved after batching", len(rootInBatch.Proofs))
+
+	// Verify transmission works
+	receiverDag := &dag.Dag{
+		Root:  partialDag.Root,
+		Leafs: make(map[string]*dag.DagLeaf),
+	}
+
+	for i, batch := range sequence {
+		if err := receiverDag.ApplyAndVerifyBatchedTransmissionPacket(batch); err != nil {
+			t.Fatalf("Failed to apply batch %d: %v", i, err)
+		}
+	}
+
+	// Verify receiver DAG
+	if err := receiverDag.Verify(); err != nil {
+		t.Fatalf("Receiver DAG partial verification failed: %v", err)
+	}
+
+	t.Log("Pruned links optimization test completed successfully")
+	t.Log("This confirms that partial DAGs with pruned links preserve merkle proofs correctly")
+}
